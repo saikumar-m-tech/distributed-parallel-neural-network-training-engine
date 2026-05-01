@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "../engine/dense_layer.hpp"
+#include "../engine/network.hpp"
 
 namespace {
 
@@ -171,6 +172,57 @@ int main() {
 	std::printf("Hand-computed forward test passed.\n");
 	test_dense_numerical_gradient();
 	std::printf("Numerical gradient test passed.\n");
+
+	std::printf("Running Network training test...\n");
+	const size_t batch = 100;
+	const int in_features = 3072;
+	const int hidden = 512;
+	const int out = 10;
+
+	std::mt19937 rng(2026);
+	std::normal_distribution<float> dist(0.0f, 1.0f);
+	std::uniform_int_distribution<int> label_dist(0, out - 1);
+
+	std::vector<float> input(batch * static_cast<size_t>(in_features));
+	std::vector<int> labels(batch);
+	for (float& value : input) {
+		value = dist(rng);
+	}
+	for (int& label : labels) {
+		label = label_dist(rng);
+	}
+
+	FloatBuffer input_buf(input.size());
+	LabelBuffer label_buf(labels.size());
+	input_buf.copy_from_host(input.data(), input.size());
+	label_buf.copy_from_host(labels.data(), labels.size());
+
+	std::vector<Dense> layers;
+	layers.emplace_back(in_features, hidden);
+	layers.emplace_back(hidden, out);
+	Network net(std::move(layers));
+
+	float initial_loss = net.forward(input_buf, label_buf);
+	std::printf("Step 0 loss: %.4f\n", initial_loss);
+	require(initial_loss > 2.1f && initial_loss < 2.5f,
+			"Initial loss not in expected range");
+
+	float last_loss = initial_loss;
+	for (int step = 1; step <= 50; ++step) {
+		net.backward();
+		net.sgd_step(0.01f);
+		last_loss = net.forward(input_buf, label_buf);
+		if (step % 10 == 0) {
+			std::printf("Step %d loss: %.4f\n", step, last_loss);
+		}
+	}
+	require(last_loss < 1.0f, "Loss did not fall below 1.0");
+
+	float acc = net.get_accuracy(input_buf, label_buf);
+	std::printf("Accuracy on random labels: %.2f%%\n", acc * 100.0f);
+	require(acc > 0.05f && acc < 0.20f, "Accuracy not near random chance");
+
+	std::printf("Network training test passed.\n");
 	std::printf("All Dense layer tests passed.\n");
 	return 0;
 }
