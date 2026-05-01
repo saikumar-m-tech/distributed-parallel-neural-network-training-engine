@@ -146,7 +146,11 @@ public:
 
     ~GpuBuffer() {
         if (data_ != nullptr) {
-            printf("GpuBuffer freeing %zu elements\n", count_);
+            static size_t free_count = 0;
+            ++free_count;
+            if (free_count <= 20 || free_count % 200 == 0) {
+                printf("GpuBuffer freeing %zu elements (free #%zu)\n", count_, free_count);
+            }
             CUDA_CHECK(cudaFree(data_));
         }
     }

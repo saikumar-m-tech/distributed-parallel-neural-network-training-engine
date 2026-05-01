@@ -65,8 +65,17 @@ def get_data(data_dir: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndar
 	return _CACHE
 
 
-def batches(rank: int, world: int, batch_size: int, data_dir: str) -> Iterator[Batch]:
+def batches(
+	rank: int,
+	world: int,
+	batch_size: int,
+	data_dir: str,
+	limit_samples: int | None = None,
+) -> Iterator[Batch]:
 	X_train, y_train, _, _ = get_data(data_dir)
+	if limit_samples is not None:
+		X_train = X_train[:limit_samples]
+		y_train = y_train[:limit_samples]
 	start, end = shard_indices(X_train.shape[0], rank, world)
 	X_shard = X_train[start:end]
 	y_shard = y_train[start:end]

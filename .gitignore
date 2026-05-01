@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.whl
+.pytest_cache/
+
+# Virtual environments
+.venv/
+
+# Build artifacts
+build/
+**/build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# CUDA / compiler outputs
+*.obj
+*.o
+*.exp
+*.lib
+*.dll
+*.pdb
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Dataset cache
+/data/
+
+# OS files
+.DS_Store
+Thumbs.db
