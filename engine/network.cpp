@@ -1,8 +1,11 @@
 #include "network.hpp"
 
+#include "../mpi/gradient_sync.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <random>
 
 namespace {
@@ -164,14 +167,7 @@ void Network::backward() {
 	layers_[0].backward(hidden_grad_buf, grad_in_buf);
 }
 
-void Network::sgd_step(float learning_rate) {
-	for (size_t i = 0; i < out_weights_.size(); ++i) {
-		out_weights_[i] -= learning_rate * dout_weights_[i];
-	}
-	for (size_t i = 0; i < out_bias_.size(); ++i) {
-		out_bias_[i] -= learning_rate * dout_bias_[i];
-	}
-
+void Network::sgd_step(float learning_rate, GradientSync* sync) {
 	auto params = layers_[0].parameters();
 	auto grads = layers_[0].gradients();
 	std::vector<float> host_weights(params[0]->size());
@@ -183,6 +179,21 @@ void Network::sgd_step(float learning_rate) {
 	params[1]->copy_to_host(host_bias.data(), host_bias.size());
 	grads[0]->copy_to_host(host_dweights.data(), host_dweights.size());
 	grads[1]->copy_to_host(host_dbias.data(), host_dbias.size());
+
+	// Synchronize all gradient buffers across ranks before applying SGD.
+	if (sync != nullptr) {
+		sync->allreduce_mean(host_dweights.data(), static_cast<int>(host_dweights.size()));
+		sync->allreduce_mean(host_dbias.data(), static_cast<int>(host_dbias.size()));
+		sync->allreduce_mean(dout_weights_.data(), static_cast<int>(dout_weights_.size()));
+		sync->allreduce_mean(dout_bias_.data(), static_cast<int>(dout_bias_.size()));
+	}
+
+	for (size_t i = 0; i < out_weights_.size(); ++i) {
+		out_weights_[i] -= learning_rate * dout_weights_[i];
+	}
+	for (size_t i = 0; i < out_bias_.size(); ++i) {
+		out_bias_[i] -= learning_rate * dout_bias_[i];
+	}
 
 	for (size_t i = 0; i < host_weights.size(); ++i) {
 		host_weights[i] -= learning_rate * host_dweights[i];
@@ -237,4 +248,66 @@ float Network::get_accuracy(const FloatBuffer& input, const LabelBuffer& labels)
 	}
 
 	return static_cast<float>(correct) / static_cast<float>(batch);
+}
+
+void Network::save_weights(const std::string& path) const {
+	std::ofstream out(path, std::ios::binary);
+	if (!out) {
+		std::fprintf(stderr, "Failed to open %s for writing\n", path.c_str());
+		return;
+	}
+
+	int header[3] = {in_features_, hidden_features_, out_features_};
+	out.write(reinterpret_cast<const char*>(header), sizeof(header));
+
+	auto params = layers_[0].parameters();
+	std::vector<float> host_w0(params[0]->size());
+	std::vector<float> host_b0(params[1]->size());
+	params[0]->copy_to_host(host_w0.data(), host_w0.size());
+	params[1]->copy_to_host(host_b0.data(), host_b0.size());
+
+	int sizes[4] = {
+		static_cast<int>(host_w0.size()),
+		static_cast<int>(host_b0.size()),
+		static_cast<int>(out_weights_.size()),
+		static_cast<int>(out_bias_.size())
+	};
+	out.write(reinterpret_cast<const char*>(sizes), sizeof(sizes));
+	out.write(reinterpret_cast<const char*>(host_w0.data()), host_w0.size() * sizeof(float));
+	out.write(reinterpret_cast<const char*>(host_b0.data()), host_b0.size() * sizeof(float));
+	out.write(reinterpret_cast<const char*>(out_weights_.data()), out_weights_.size() * sizeof(float));
+	out.write(reinterpret_cast<const char*>(out_bias_.data()), out_bias_.size() * sizeof(float));
+}
+
+void Network::load_weights(const std::string& path) {
+	std::ifstream in(path, std::ios::binary);
+	if (!in) {
+		std::fprintf(stderr, "Failed to open %s for reading\n", path.c_str());
+		return;
+	}
+
+	int header[3] = {0, 0, 0};
+	in.read(reinterpret_cast<char*>(header), sizeof(header));
+	if (header[0] != in_features_ || header[1] != hidden_features_ || header[2] != out_features_) {
+		std::fprintf(stderr, "Weight file shape mismatch\n");
+		return;
+	}
+
+	int sizes[4] = {0, 0, 0, 0};
+	in.read(reinterpret_cast<char*>(sizes), sizeof(sizes));
+	std::vector<float> host_w0(static_cast<size_t>(sizes[0]));
+	std::vector<float> host_b0(static_cast<size_t>(sizes[1]));
+	std::vector<float> host_w1(static_cast<size_t>(sizes[2]));
+	std::vector<float> host_b1(static_cast<size_t>(sizes[3]));
+
+	in.read(reinterpret_cast<char*>(host_w0.data()), host_w0.size() * sizeof(float));
+	in.read(reinterpret_cast<char*>(host_b0.data()), host_b0.size() * sizeof(float));
+	in.read(reinterpret_cast<char*>(host_w1.data()), host_w1.size() * sizeof(float));
+	in.read(reinterpret_cast<char*>(host_b1.data()), host_b1.size() * sizeof(float));
+
+	auto params = layers_[0].parameters();
+	params[0]->copy_from_host(host_w0.data(), host_w0.size());
+	params[1]->copy_from_host(host_b0.data(), host_b0.size());
+	out_weights_ = std::move(host_w1);
+	out_bias_ = std::move(host_b1);
 }

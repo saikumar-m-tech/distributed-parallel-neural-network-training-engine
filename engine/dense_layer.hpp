@@ -13,6 +13,8 @@ public:
 	void backward(const FloatBuffer& grad_out, FloatBuffer& grad_in) override;
 	std::vector<FloatBuffer*> parameters() override;
 	std::vector<FloatBuffer*> gradients() override;
+	std::vector<const FloatBuffer*> parameters() const override;
+	std::vector<const FloatBuffer*> gradients() const override;
 
 	int in_features() const;
 	int out_features() const;

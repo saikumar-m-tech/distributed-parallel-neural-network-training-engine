@@ -139,6 +139,14 @@ std::vector<FloatBuffer*> Dense::gradients() {
 	return {&dweights_, &dbias_};
 }
 
+std::vector<const FloatBuffer*> Dense::parameters() const {
+	return {&weights_, &bias_};
+}
+
+std::vector<const FloatBuffer*> Dense::gradients() const {
+	return {&dweights_, &dbias_};
+}
+
 int Dense::in_features() const {
 	return in_features_;
 }

@@ -210,7 +210,7 @@ int main() {
 	float last_loss = initial_loss;
 	for (int step = 1; step <= 50; ++step) {
 		net.backward();
-		net.sgd_step(0.01f);
+		net.sgd_step(0.01f, nullptr);
 		last_loss = net.forward(input_buf, label_buf);
 		if (step % 10 == 0) {
 			std::printf("Step %d loss: %.4f\n", step, last_loss);

@@ -13,6 +13,8 @@ public:
 	virtual void backward(const FloatBuffer& grad_out, FloatBuffer& grad_in) = 0;
 	virtual std::vector<FloatBuffer*> parameters() = 0;
 	virtual std::vector<FloatBuffer*> gradients() = 0;
+	virtual std::vector<const FloatBuffer*> parameters() const = 0;
+	virtual std::vector<const FloatBuffer*> gradients() const = 0;
 	virtual ~Layer() = default;
 };
 

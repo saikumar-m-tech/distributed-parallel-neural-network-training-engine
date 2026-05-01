@@ -2,7 +2,7 @@
 #include <thread>
 #include <chrono>
 
-#include "../mpi/gradient_sync.cpp"
+#include "../mpi/gradient_sync.hpp"
 
 int main() {
 	GradientSync sync;
