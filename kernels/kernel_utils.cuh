@@ -112,4 +112,64 @@ public:
     }
 };
 
+template <typename T>
+class GpuBuffer {
+private:
+    T* data_;
+    size_t count_;
+
+public:
+    explicit GpuBuffer(size_t count) : data_(nullptr), count_(count) {
+        CUDA_CHECK(cudaMalloc(&data_, sizeof(T) * count_));
+    }
+
+    GpuBuffer(const GpuBuffer&) = delete;
+    GpuBuffer& operator=(const GpuBuffer&) = delete;
+
+    GpuBuffer(GpuBuffer&& other) noexcept : data_(other.data_), count_(other.count_) {
+        other.data_ = nullptr;
+        other.count_ = 0;
+    }
+
+    GpuBuffer& operator=(GpuBuffer&& other) noexcept {
+        if (this != &other) {
+            if (data_ != nullptr) {
+                CUDA_CHECK(cudaFree(data_));
+            }
+            data_ = other.data_;
+            count_ = other.count_;
+            other.data_ = nullptr;
+            other.count_ = 0;
+        }
+        return *this;
+    }
+
+    ~GpuBuffer() {
+        if (data_ != nullptr) {
+            printf("GpuBuffer freeing %zu elements\n", count_);
+            CUDA_CHECK(cudaFree(data_));
+        }
+    }
+
+    T* data() {
+        return data_;
+    }
+
+    const T* data() const {
+        return data_;
+    }
+
+    void copy_from_host(const T* src, size_t count) {
+        CUDA_CHECK(cudaMemcpy(data_, src, sizeof(T) * count, cudaMemcpyHostToDevice));
+    }
+
+    void copy_to_host(T* dst, size_t count) const {
+        CUDA_CHECK(cudaMemcpy(dst, data_, sizeof(T) * count, cudaMemcpyDeviceToHost));
+    }
+
+    size_t size() const {
+        return count_;
+    }
+};
+
 #endif // KERNEL_UTILS_CUH
