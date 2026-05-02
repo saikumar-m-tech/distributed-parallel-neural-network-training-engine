@@ -1,8 +1,46 @@
+import argparse
+import json
 import math
-import time
+import os
+import sys
+from pathlib import Path
 
 import cupy as cp
 import matplotlib.pyplot as plt
+def configure_windows_cuda_dlls():
+	if sys.platform != "win32":
+		return
+
+	# Allow manual override for custom CUDA/CuPy DLL locations.
+	manual_paths = os.environ.get("CUPY_DLL_PATHS", "")
+	for entry in manual_paths.split(os.pathsep):
+		entry = entry.strip()
+		if entry:
+			try:
+				os.add_dll_directory(entry)
+			except (FileNotFoundError, OSError):
+				pass
+
+	# Prefer bundled NVIDIA Python packages if present.
+	venv_root = Path(sys.prefix)
+	nvidia_bins = [
+		venv_root / "Lib" / "site-packages" / "nvidia" / "curand" / "bin",
+		venv_root / "Lib" / "site-packages" / "nvidia" / "cublas" / "bin",
+	]
+	for path in nvidia_bins:
+		if path.exists():
+			try:
+				os.add_dll_directory(str(path))
+			except (FileNotFoundError, OSError):
+				pass
+
+	# Fall back to default CUDA install path if present.
+	default_cuda = Path("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.0/bin")
+	if default_cuda.exists():
+		try:
+			os.add_dll_directory(str(default_cuda))
+		except (FileNotFoundError, OSError):
+			pass
 
 
 KERNEL_CODE = r"""
@@ -69,40 +107,62 @@ def gflops_for_gemm(m, n, k, seconds):
 	return ops / (seconds * 1e9)
 
 
-def benchmark_kernel(kernel, a, b, c, m, n, k, block, grid, warmup=2, runs=5):
+def benchmark_kernel(kernel, a, b, c, m, n, k, block, grid, warmup=2, runs=100):
 	for _ in range(warmup):
 		kernel(grid, block, (a, b, c, m, n, k))
 	cp.cuda.Stream.null.synchronize()
 
-	start = cp.cuda.Event()
-	end = cp.cuda.Event()
-	start.record()
+	timings = []
 	for _ in range(runs):
+		start = cp.cuda.Event()
+		end = cp.cuda.Event()
+		start.record()
 		kernel(grid, block, (a, b, c, m, n, k))
-	end.record()
-	end.synchronize()
-	elapsed_ms = cp.cuda.get_elapsed_time(start, end)
-	return (elapsed_ms / 1000.0) / runs
+		end.record()
+		end.synchronize()
+		elapsed_ms = cp.cuda.get_elapsed_time(start, end)
+		timings.append(elapsed_ms / 1000.0)
+	return float(cp.median(cp.asarray(timings)))
 
 
-def benchmark_cublas(a, b, warmup=2, runs=5):
+def benchmark_cublas(a, b, warmup=2, runs=100):
 	for _ in range(warmup):
 		_ = a @ b
 	cp.cuda.Stream.null.synchronize()
 
-	start = cp.cuda.Event()
-	end = cp.cuda.Event()
-	start.record()
+	timings = []
 	for _ in range(runs):
+		start = cp.cuda.Event()
+		end = cp.cuda.Event()
+		start.record()
 		_ = a @ b
-	end.record()
-	end.synchronize()
-	elapsed_ms = cp.cuda.get_elapsed_time(start, end)
-	return (elapsed_ms / 1000.0) / runs
+		end.record()
+		end.synchronize()
+		elapsed_ms = cp.cuda.get_elapsed_time(start, end)
+		timings.append(elapsed_ms / 1000.0)
+	return float(cp.median(cp.asarray(timings)))
+
+
+def load_results(path):
+	with open(path, "r", encoding="utf-8") as handle:
+		return json.load(handle)
+
+
+def save_results(path, payload):
+	with open(path, "w", encoding="utf-8") as handle:
+		json.dump(payload, handle, indent=2)
 
 
 def main():
-	sizes = [64, 128, 256, 512, 1024]
+	configure_windows_cuda_dlls()
+	parser = argparse.ArgumentParser(description="Benchmark tiled GEMM vs cuBLAS.")
+	parser.add_argument("--label", default="current", help="Label for this GPU run.")
+	parser.add_argument("--overlay", action="append", default=[], help="Path to overlay JSON results.")
+	parser.add_argument("--out", default="benchmarks/matmul_vs_cublas.png", help="Output plot path.")
+	parser.add_argument("--save", default="benchmarks/matmul_results.json", help="Output JSON path.")
+	args = parser.parse_args()
+
+	sizes = [64, 128, 256, 512, 1024, 2048, 4096]
 	module = cp.RawModule(code=KERNEL_CODE)
 	naive_kernel = module.get_function("naive_matmul_kernel")
 	tiled_kernel = module.get_function("tiled_matmul_kernel")
@@ -137,17 +197,37 @@ def main():
 		percent = (tiled_perf / cublas_perf) * 100.0 if cublas_perf > 0 else 0.0
 		print(f"Size {size:4d}: tiled_matmul is {percent:6.2f}% of cuBLAS")
 
-	plt.figure(figsize=(8, 5))
-	plt.plot(sizes, naive_gflops, marker="o", label="naive_matmul")
-	plt.plot(sizes, tiled_gflops, marker="o", label="tiled_matmul")
-	plt.plot(sizes, cublas_gflops, marker="o", label="cuBLAS SGEMM")
+	results = {
+		"label": args.label,
+		"sizes": sizes,
+		"naive_gflops": naive_gflops,
+		"tiled_gflops": tiled_gflops,
+		"cublas_gflops": cublas_gflops,
+	}
+	save_results(args.save, results)
+
+	overlays = [load_results(path) for path in args.overlay]
+
+	plt.figure(figsize=(9, 5.5))
+	plt.plot(sizes, tiled_gflops, marker="o", label=f"{args.label} tiled")
+	plt.plot(sizes, cublas_gflops, marker="o", label=f"{args.label} cuBLAS")
+
+	for overlay in overlays:
+		label = overlay.get("label", "overlay")
+		plt.plot(overlay["sizes"], overlay["tiled_gflops"], marker="o", label=f"{label} tiled")
+		plt.plot(overlay["sizes"], overlay["cublas_gflops"], marker="o", label=f"{label} cuBLAS")
+
+	plt.axhline(4400.0, color="tab:red", linestyle="--", linewidth=1.2, label="GTX 1650 peak")
 	plt.title("GEMM Performance (GFLOPs)")
 	plt.xlabel("Matrix size (N = M = K)")
 	plt.ylabel("GFLOPs")
 	plt.grid(True, linestyle="--", alpha=0.5)
 	plt.legend()
 	plt.tight_layout()
-	plt.show()
+
+	out_path = Path(args.out)
+	out_path.parent.mkdir(parents=True, exist_ok=True)
+	plt.savefig(out_path, dpi=150)
 
 
 if __name__ == "__main__":
