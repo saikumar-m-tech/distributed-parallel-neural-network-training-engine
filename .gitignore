@@ -6,14 +6,16 @@ __pycache__/
 *.egg-info/
 *.whl
 .pytest_cache/
-
+.pdf
 # Virtual environments
 .venv/
+.venv/Lib/
 
 # Build artifacts
 build/
 **/build/
 CMakeFiles/
+archive/cifar-10-batches-py/
 CMakeCache.txt
 cmake_install.cmake
 
@@ -24,6 +26,7 @@ cmake_install.cmake
 *.lib
 *.dll
 *.pdb
+*.pdf
 
 # Jupyter
 .ipynb_checkpoints/

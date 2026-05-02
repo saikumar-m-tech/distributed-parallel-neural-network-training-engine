@@ -119,6 +119,8 @@ private:
     size_t count_;
 
 public:
+    GpuBuffer() : data_(nullptr), count_(0) {}
+
     explicit GpuBuffer(size_t count) : data_(nullptr), count_(count) {
         CUDA_CHECK(cudaMalloc(&data_, sizeof(T) * count_));
     }

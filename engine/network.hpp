@@ -30,10 +30,10 @@ private:
 	std::vector<int> last_labels_;
 	std::vector<float> grad_logits_;
 	std::vector<float> grad_hidden_;
-	std::vector<float> out_weights_;
-	std::vector<float> out_bias_;
-	std::vector<float> dout_weights_;
-	std::vector<float> dout_bias_;
+	FloatBuffer out_weights_;
+	FloatBuffer out_bias_;
+	FloatBuffer dout_weights_;
+	FloatBuffer dout_bias_;
 	size_t last_batch_;
 	int in_features_;
 	int hidden_features_;

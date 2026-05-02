@@ -99,6 +99,21 @@ extern "C" __global__ void softmax_forward(const float* in, float* out,
 	}
 }
 
+extern "C" __global__ void grad_logits_kernel(const float* probs, const int* labels,
+									float* grad_logits, int batch, int classes) {
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	int total = batch * classes;
+	if (idx < total) {
+		int b = idx / classes;
+		int o = idx % classes;
+		float grad = probs[idx];
+		if (o == labels[b]) {
+			grad -= 1.0f;
+		}
+		grad_logits[idx] = grad / static_cast<float>(batch);
+	}
+}
+
 extern "C" __global__ void cross_entropy_loss(const float* probs, const int* labels,
 										float* loss, int batch_size, int n_classes) {
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -153,6 +168,21 @@ void sum_over_batch_gpu(const float* grad, float* db, int batch, int features) {
 	int block = 256;
 	int grid = (features + block - 1) / block;
 	sum_over_batch<<<grid, block>>>(grad, db, batch, features);
+	CUDA_CHECK(cudaGetLastError());
+}
+
+void softmax_forward_gpu(const float* in, float* out, int batch_size, int num_classes) {
+	int block = 256;
+	softmax_forward<<<batch_size, block, block * sizeof(float)>>>(in, out, batch_size, num_classes);
+	CUDA_CHECK(cudaGetLastError());
+}
+
+void grad_logits_gpu(const float* probs, const int* labels, float* grad_logits,
+					int batch, int classes) {
+	int total = batch * classes;
+	int block = 256;
+	int grid = (total + block - 1) / block;
+	grad_logits_kernel<<<grid, block>>>(probs, labels, grad_logits, batch, classes);
 	CUDA_CHECK(cudaGetLastError());
 }
 
