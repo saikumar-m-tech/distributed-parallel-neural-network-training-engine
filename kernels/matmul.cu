@@ -5,7 +5,7 @@
 
 #define TILE_SIZE 16
 
-__global__ void naive_matmul_kernel(const float* A, const float* B, float* C,
+extern "C" __global__ void naive_matmul_kernel(const float* A, const float* B, float* C,
 									int M, int N, int K) {
 	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -19,7 +19,7 @@ __global__ void naive_matmul_kernel(const float* A, const float* B, float* C,
 	}
 }
 
-__global__ void tiled_matmul_kernel(const float* A, const float* B, float* C,
+extern "C" __global__ void tiled_matmul_kernel(const float* A, const float* B, float* C,
 									int M, int N, int K) {
 	__shared__ float tileA[TILE_SIZE][TILE_SIZE];
 	__shared__ float tileB[TILE_SIZE][TILE_SIZE];

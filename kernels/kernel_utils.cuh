@@ -65,9 +65,9 @@ public:
     /**
      * @brief Destructor: destroys CUDA events
      */
-    ~GpuTimer() {
-        CUDA_CHECK(cudaEventDestroy(start_event_));
-        CUDA_CHECK(cudaEventDestroy(stop_event_));
+    ~GpuTimer() noexcept {
+        cudaEventDestroy(start_event_);
+        cudaEventDestroy(stop_event_);
     }
 
     /**
@@ -144,14 +144,14 @@ public:
         return *this;
     }
 
-    ~GpuBuffer() {
+    ~GpuBuffer() noexcept {
         if (data_ != nullptr) {
-            static size_t free_count = 0;
-            ++free_count;
-            if (free_count <= 20 || free_count % 200 == 0) {
-                printf("GpuBuffer freeing %zu elements (free #%zu)\n", count_, free_count);
+            cudaError_t err = cudaFree(data_);
+            if (err != cudaSuccess && err != cudaErrorCudartUnloading) {
+                fprintf(stderr, "GpuBuffer cudaFree failed: %s\n",
+                        cudaGetErrorString(err));
             }
-            CUDA_CHECK(cudaFree(data_));
+            data_ = nullptr;
         }
     }
 
