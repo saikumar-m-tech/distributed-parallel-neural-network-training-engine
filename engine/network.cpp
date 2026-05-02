@@ -84,8 +84,8 @@ Network::Network(std::vector<Dense> layers)
 	dout_weights_ = FloatBuffer(static_cast<size_t>(out_features_) * hidden_features_);
 	dout_bias_ = FloatBuffer(static_cast<size_t>(out_features_));
 
-	std::mt19937 rng(1234);
-	float stddev = std::sqrt(2.0f / static_cast<float>(hidden_features_));
+	std::mt19937 rng(1337);
+	float stddev = 0.7f / std::sqrt(static_cast<float>(hidden_features_));
 	std::normal_distribution<float> dist(0.0f, stddev);
 
 	std::vector<float> host_out_weights(static_cast<size_t>(out_features_) * hidden_features_);

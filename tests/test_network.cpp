@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <random>
 #include <vector>
 
 #include "../engine/dense_layer.hpp"
@@ -218,7 +219,20 @@ int main() {
 	}
 	require(last_loss < 1.0f, "Loss did not fall below 1.0");
 
-	float acc = net.get_accuracy(input_buf, label_buf);
+	std::vector<float> eval_input(batch * static_cast<size_t>(in_features));
+	std::vector<int> eval_labels(batch);
+	for (float& value : eval_input) {
+		value = dist(rng);
+	}
+	for (int& label : eval_labels) {
+		label = label_dist(rng);
+	}
+	FloatBuffer eval_input_buf(eval_input.size());
+	LabelBuffer eval_label_buf(eval_labels.size());
+	eval_input_buf.copy_from_host(eval_input.data(), eval_input.size());
+	eval_label_buf.copy_from_host(eval_labels.data(), eval_labels.size());
+
+	float acc = net.get_accuracy(eval_input_buf, eval_label_buf);
 	std::printf("Accuracy on random labels: %.2f%%\n", acc * 100.0f);
 	require(acc > 0.05f && acc < 0.20f, "Accuracy not near random chance");
 
