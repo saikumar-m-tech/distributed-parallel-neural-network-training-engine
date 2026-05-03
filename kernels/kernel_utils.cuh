@@ -2,6 +2,10 @@
 #define KERNEL_UTILS_CUH
 
 #include <cuda_runtime.h>
+
+#if defined(__CUDACC_RTC__) || defined(__CUDA_ARCH__)
+#define CUDA_CHECK(call) (call)
+#else
 #include <stdio.h>
 #include <chrono>
 
@@ -177,5 +181,7 @@ public:
         return count_;
     }
 };
+
+#endif // __CUDACC_RTC__
 
 #endif // KERNEL_UTILS_CUH

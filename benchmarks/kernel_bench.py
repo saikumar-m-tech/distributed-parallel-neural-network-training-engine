@@ -3,10 +3,12 @@ import json
 import math
 import os
 import sys
+import subprocess
 from pathlib import Path
 
 import cupy as cp
 import matplotlib.pyplot as plt
+import numpy as np
 def configure_windows_cuda_dlls():
 	if sys.platform != "win32":
 		return
@@ -42,64 +44,16 @@ def configure_windows_cuda_dlls():
 		except (FileNotFoundError, OSError):
 			pass
 
-
-KERNEL_CODE = r"""
-#define TILE_SIZE 16
-
-extern "C" __global__ void naive_matmul_kernel(const float* A, const float* B, float* C,
-												int M, int N, int K) {
-	int row = blockIdx.y * blockDim.y + threadIdx.y;
-	int col = blockIdx.x * blockDim.x + threadIdx.x;
-	if (row < M && col < N) {
-		float sum = 0.0f;
-		for (int k = 0; k < K; ++k) {
-			sum += A[row * K + k] * B[k * N + col];
-		}
-		C[row * N + col] = sum;
-	}
-}
-
-extern "C" __global__ void tiled_matmul_kernel(const float* A, const float* B, float* C,
-												int M, int N, int K) {
-	__shared__ float tileA[TILE_SIZE][TILE_SIZE];
-	__shared__ float tileB[TILE_SIZE][TILE_SIZE];
-
-	int row = blockIdx.y * TILE_SIZE + threadIdx.y;
-	int col = blockIdx.x * TILE_SIZE + threadIdx.x;
-
-	float sum = 0.0f;
-	int tiles = (K + TILE_SIZE - 1) / TILE_SIZE;
-
-	for (int t = 0; t < tiles; ++t) {
-		int a_col = t * TILE_SIZE + threadIdx.x;
-		int b_row = t * TILE_SIZE + threadIdx.y;
-
-		if (row < M && a_col < K) {
-			tileA[threadIdx.y][threadIdx.x] = A[row * K + a_col];
-		} else {
-			tileA[threadIdx.y][threadIdx.x] = 0.0f;
-		}
-
-		if (b_row < K && col < N) {
-			tileB[threadIdx.y][threadIdx.x] = B[b_row * N + col];
-		} else {
-			tileB[threadIdx.y][threadIdx.x] = 0.0f;
-		}
-
-		__syncthreads();
-
-		for (int k = 0; k < TILE_SIZE; ++k) {
-			sum += tileA[threadIdx.y][k] * tileB[k][threadIdx.x];
-		}
-
-		__syncthreads();
-	}
-
-	if (row < M && col < N) {
-		C[row * N + col] = sum;
-	}
-}
-"""
+def load_matmul_module():
+	repo_root = Path(__file__).resolve().parents[1]
+	kernels_dir = repo_root / "kernels"
+	src_path = kernels_dir / "matmul.cu"
+	source = src_path.read_text(encoding="utf-8")
+	return cp.RawModule(
+		code=source,
+		options=("--std=c++17", f"-I{kernels_dir}"),
+		name_expressions=("naive_matmul_kernel", "tiled_matmul_kernel"),
+	)
 
 
 def gflops_for_gemm(m, n, k, seconds):
@@ -143,6 +97,15 @@ def benchmark_cublas(a, b, warmup=2, runs=100):
 	return float(cp.median(cp.asarray(timings)))
 
 
+def make_random_matrix(shape):
+	try:
+		return cp.random.random(shape, dtype=cp.float32)
+	except ImportError:
+		# Fall back to NumPy when cuRAND DLLs are unavailable.
+		host = np.random.random_sample(shape).astype(np.float32)
+		return cp.asarray(host)
+
+
 def load_results(path):
 	with open(path, "r", encoding="utf-8") as handle:
 		return json.load(handle)
@@ -153,17 +116,77 @@ def save_results(path, payload):
 		json.dump(payload, handle, indent=2)
 
 
+def get_default_label():
+	try:
+		output = subprocess.check_output(
+			["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+			stderr=subprocess.STDOUT,
+			text=True,
+			timeout=5,
+		).strip()
+		return output.splitlines()[0].strip() if output else "current"
+	except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+		return "current"
+
+
+def get_runtime_metadata():
+	def format_cuda_version(version):
+		major = version // 1000
+		minor = (version % 1000) // 10
+		return f"{major}.{minor}"
+
+	def get_nvrtc_version():
+		try:
+			import cupy.cuda.nvrtc as nvrtc
+			major, minor = nvrtc.getVersion()
+			return f"{major}.{minor}"
+		except Exception:
+			return "unknown"
+
+	device = cp.cuda.Device()
+	props = cp.cuda.runtime.getDeviceProperties(device.id)
+	device_name = props.get("name", "unknown")
+	if isinstance(device_name, (bytes, bytearray)):
+		device_name = device_name.decode("utf-8", errors="replace")
+	return {
+		"device_id": device.id,
+		"device_name": device_name,
+		"compute_capability": f"{props.get('major', 0)}.{props.get('minor', 0)}",
+		"total_memory_bytes": int(props.get("totalGlobalMem", 0)),
+		"cupy_version": cp.__version__,
+		"nvrtc_version": get_nvrtc_version(),
+		"runtime_version": format_cuda_version(cp.cuda.runtime.runtimeGetVersion()),
+		"driver_version": format_cuda_version(cp.cuda.runtime.driverGetVersion()),
+	}
+
+
+def warmup_device(iterations=5):
+	# Reduce first-run compilation/initialization noise.
+	for _ in range(iterations):
+		a = cp.random.random((64, 64), dtype=cp.float32)
+		b = cp.random.random((64, 64), dtype=cp.float32)
+		_ = a @ b
+	cp.cuda.Stream.null.synchronize()
+
+
 def main():
 	configure_windows_cuda_dlls()
 	parser = argparse.ArgumentParser(description="Benchmark tiled GEMM vs cuBLAS.")
-	parser.add_argument("--label", default="current", help="Label for this GPU run.")
+	parser.add_argument("--label", default=get_default_label(), help="Label for this GPU run.")
 	parser.add_argument("--overlay", action="append", default=[], help="Path to overlay JSON results.")
 	parser.add_argument("--out", default="benchmarks/matmul_vs_cublas.png", help="Output plot path.")
 	parser.add_argument("--save", default="benchmarks/matmul_results.json", help="Output JSON path.")
+	parser.add_argument("--seed", type=int, default=1337, help="Random seed for reproducibility.")
+	parser.add_argument("--warmup-iters", type=int, default=5, help="GPU warmup iterations before timing.")
 	args = parser.parse_args()
 
+	cp.random.seed(args.seed)
+	np.random.seed(args.seed)
+	if args.warmup_iters > 0:
+		warmup_device(args.warmup_iters)
+
 	sizes = [64, 128, 256, 512, 1024, 2048, 4096]
-	module = cp.RawModule(code=KERNEL_CODE)
+	module = load_matmul_module()
 	naive_kernel = module.get_function("naive_matmul_kernel")
 	tiled_kernel = module.get_function("tiled_matmul_kernel")
 
@@ -175,8 +198,8 @@ def main():
 
 	for size in sizes:
 		m = n = k = size
-		a = cp.random.random((m, k), dtype=cp.float32)
-		b = cp.random.random((k, n), dtype=cp.float32)
+		a = make_random_matrix((m, k))
+		b = make_random_matrix((k, n))
 		c = cp.empty((m, n), dtype=cp.float32)
 
 		block = (16, 16, 1)
@@ -203,6 +226,9 @@ def main():
 		"naive_gflops": naive_gflops,
 		"tiled_gflops": tiled_gflops,
 		"cublas_gflops": cublas_gflops,
+		"seed": args.seed,
+		"warmup_iters": args.warmup_iters,
+		"metadata": get_runtime_metadata(),
 	}
 	save_results(args.save, results)
 

@@ -56,11 +56,23 @@ target_include_directories(test_network PRIVATE
 target_compile_definitions(test_network PRIVATE PARALLELNET_NO_MPI=1)
 target_link_libraries(test_network PRIVATE engine_lib cuda_kernels CUDA::cudart)
 
+# Add test_exception executable (C++ source only)
+add_executable(test_exception tests/test_exception.cpp)
+set_target_properties(test_exception PROPERTIES
+    LINKER_LANGUAGE CXX
+)
+target_include_directories(test_exception PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/kernels
+)
+target_link_libraries(test_exception PRIVATE cuda_kernels CUDA::cudart)
+
 # Compiler flags
 if(MSVC)
     target_compile_options(test_network PRIVATE /W4)
+    target_compile_options(test_exception PRIVATE /W4)
 else()
     target_compile_options(test_network PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(test_exception PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 # CUDA specific flags

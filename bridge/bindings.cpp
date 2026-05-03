@@ -4,6 +4,7 @@
 #include <pybind11/pybind11.h>
 
 #include "../engine/network.hpp"
+#include "../mpi/gradient_sync.hpp"
 
 namespace py = pybind11;
 
@@ -14,6 +15,7 @@ public:
 		: learning_rate_(learning_rate),
 		  mpi_rank_(mpi_rank),
 		  world_size_(world_size),
+		  sync_(),
 		  net_(build_layers(input_dim, hidden_dim, output_dim)) {}
 
 	float train_step(py::array_t<float> X, py::array_t<int> y) {
@@ -38,7 +40,7 @@ public:
 
 		float loss = net_.forward(input_buf, label_buf);
 		net_.backward();
-		net_.sgd_step(learning_rate_, nullptr);
+		net_.sgd_step(learning_rate_, &sync_);
 		return loss;
 	}
 
@@ -76,6 +78,7 @@ private:
 	float learning_rate_;
 	int mpi_rank_;
 	int world_size_;
+	GradientSync sync_;
 	Network net_;
 };
 
