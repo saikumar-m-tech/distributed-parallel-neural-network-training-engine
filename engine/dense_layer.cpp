@@ -74,7 +74,6 @@ Dense::Dense(int in_features, int out_features)
 	  bias_(static_cast<size_t>(out_features)),
 	  dweights_(static_cast<size_t>(out_features) * in_features),
 	  dbias_(static_cast<size_t>(out_features)),
-	  last_input_(),
 	  last_batch_(0) {
 	std::mt19937 rng(1337);
 	float stddev = std::sqrt(2.0f / static_cast<float>(in_features_));
@@ -113,8 +112,6 @@ void Dense::forward(const FloatBuffer& in, FloatBuffer& out) {
 	}
 
 	last_batch_ = in.size() / static_cast<size_t>(in_features_);
-	last_input_.assign(in.size(), 0.0f);
-	in.copy_to_host(last_input_.data(), last_input_.size());
 
 	DenseCache& cache = get_cache(this, last_batch_, in_features_, out_features_);
 	CUDA_CHECK(cudaMemcpy(cache.input->data(), in.data(), sizeof(float) * cache.input_size,
@@ -131,7 +128,7 @@ void Dense::forward(const FloatBuffer& in, FloatBuffer& out) {
 }
 
 void Dense::backward(const FloatBuffer& grad_out, FloatBuffer& grad_in) {
-	if (last_batch_ == 0 || last_input_.empty()) {
+	if (last_batch_ == 0) {
 		fprintf(stderr, "Dense backward called without forward cache\n");
 		return;
 	}

@@ -26,7 +26,6 @@ private:
 	FloatBuffer bias_;
 	FloatBuffer dweights_;
 	FloatBuffer dbias_;
-	std::vector<float> last_input_;
 	size_t last_batch_;
 };
 

@@ -23,13 +23,8 @@ public:
 
 private:
 	std::vector<Dense> layers_;
-	std::vector<float> last_input_;
-	std::vector<float> last_hidden_;
-	std::vector<float> last_logits_;
 	std::vector<float> last_probs_;
 	std::vector<int> last_labels_;
-	std::vector<float> grad_logits_;
-	std::vector<float> grad_hidden_;
 	FloatBuffer out_weights_;
 	FloatBuffer out_bias_;
 	FloatBuffer dout_weights_;

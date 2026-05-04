@@ -76,4 +76,4 @@ mpirun -n 1 python python/train.py --batch-size 512 --limit-samples 20000 --epoc
 
 - CIFAR-10 is downloaded to the `data/` directory on first run.
 - Training logs include per-epoch time and throughput.
-- The `GpuBuffer` destructor prints are throttled to reduce log spam.
+- The `GpuBuffer` destructor is silent unless a cudaFree error occurs.

@@ -64,7 +64,9 @@ public:
 		for (int i = 0; i < count; ++i) {
 			pre_sum += static_cast<double>(gradient_buffer[i]);
 		}
+		#ifdef PARALLELNET_DEBUG_ALLREDUCE
 		std::printf("[rank %d] allreduce_mean pre checksum: %.6f\n", rank_id, pre_sum);
+		#endif
 		MPI_Barrier(MPI_COMM_WORLD);
 		MPI_Allreduce(MPI_IN_PLACE, gradient_buffer, count, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
 		int size = world_size();
@@ -78,7 +80,9 @@ public:
 		for (int i = 0; i < count; ++i) {
 			post_sum += static_cast<double>(gradient_buffer[i]);
 		}
+		#ifdef PARALLELNET_DEBUG_ALLREDUCE
 		std::printf("[rank %d] allreduce_mean post checksum: %.6f\n", rank_id, post_sum);
+		#endif
 	}
 };
 

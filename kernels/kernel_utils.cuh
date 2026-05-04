@@ -140,7 +140,11 @@ public:
     GpuBuffer& operator=(GpuBuffer&& other) noexcept {
         if (this != &other) {
             if (data_ != nullptr) {
-                CUDA_CHECK(cudaFree(data_));
+                cudaError_t err = cudaFree(data_);
+                if (err != cudaSuccess && err != cudaErrorCudartUnloading) {
+                    fprintf(stderr, "GpuBuffer move-assign cudaFree failed: %s\n",
+                            cudaGetErrorString(err));
+                }
             }
             data_ = other.data_;
             count_ = other.count_;

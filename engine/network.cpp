@@ -56,13 +56,8 @@ NetworkCache& get_cache(size_t batch, int hidden_features, int out_features) {
 
 Network::Network(std::vector<Dense> layers)
 	: layers_(std::move(layers)),
-	  last_input_(),
-	  last_hidden_(),
-	  last_logits_(),
 	  last_probs_(),
 	  last_labels_(),
-	  grad_logits_(),
-	  grad_hidden_(),
 	  out_weights_(),
 	  out_bias_(),
 	  dout_weights_(),
@@ -110,16 +105,11 @@ float Network::forward(const FloatBuffer& input, const LabelBuffer& labels) {
 	last_batch_ = input.size() / static_cast<size_t>(in_features_);
 	last_labels_.assign(labels.size(), 0);
 	labels.copy_to_host(last_labels_.data(), last_labels_.size());
+	const size_t hidden_size = last_batch_ * static_cast<size_t>(hidden_features_);
+	const size_t logits_size = last_batch_ * static_cast<size_t>(out_features_);
 
-	last_hidden_.assign(last_batch_ * static_cast<size_t>(hidden_features_), 0.0f);
-	last_logits_.assign(last_batch_ * static_cast<size_t>(out_features_), 0.0f);
-	last_probs_.assign(last_logits_.size(), 0.0f);
-	grad_logits_.assign(last_logits_.size(), 0.0f);
-	grad_hidden_.assign(last_hidden_.size(), 0.0f);
-
-	FloatBuffer hidden_buf(last_hidden_.size());
+	FloatBuffer hidden_buf(hidden_size);
 	layers_[0].forward(input, hidden_buf);
-	hidden_buf.copy_to_host(last_hidden_.data(), last_hidden_.size());
 
 	NetworkCache& cache = get_cache(last_batch_, hidden_features_, out_features_);
 	CUDA_CHECK(cudaMemcpy(cache.hidden.data(), hidden_buf.data(),
@@ -134,7 +124,7 @@ float Network::forward(const FloatBuffer& input, const LabelBuffer& labels) {
 	softmax_forward_gpu(cache.logits.data(), cache.probs.data(),
 					static_cast<int>(last_batch_), out_features_);
 
-	cache.logits.copy_to_host(last_logits_.data(), last_logits_.size());
+	last_probs_.assign(logits_size, 0.0f);
 	cache.probs.copy_to_host(last_probs_.data(), last_probs_.size());
 
 	float total_loss = 0.0f;
