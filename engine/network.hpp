@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "batch_norm_layer.hpp"
 #include "dense_layer.hpp"
 
 using LabelBuffer = GpuBuffer<int>;
@@ -25,6 +26,7 @@ private:
 	std::vector<Dense> layers_;
 	std::vector<float> last_probs_;
 	std::vector<int> last_labels_;
+	BatchNorm batch_norm_;
 	FloatBuffer out_weights_;
 	FloatBuffer out_bias_;
 	FloatBuffer dout_weights_;

@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(DistributedNeuralNetworkTraining CUDA CXX)
 
+option(PARALLELNET_BUILD_MPI "Build MPI utilities" ON)
+
 # Set C++ standard to C++17
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +22,8 @@ set(CMAKE_CUDA_ARCHITECTURES 75)
 add_library(cuda_kernels 
     kernels/matmul.cu
     kernels/activations.cu
+    kernels/batch_norm.cu
+    kernels/sgd_update.cu
 )
 set_target_properties(cuda_kernels PROPERTIES
     LANGUAGE CUDA
@@ -32,6 +36,7 @@ target_link_libraries(cuda_kernels PUBLIC CUDA::cudart)
 # Engine library (with C++ sources only)
 add_library(engine_lib
     engine/dense_layer.cpp
+    engine/batch_norm_layer.cpp
     engine/network.cpp
 )
 set_target_properties(engine_lib PROPERTIES
@@ -81,3 +86,14 @@ set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -lineinfo")
 message(STATUS "CUDA Compute Capability: 7.5 (NVIDIA GeForce GTX 1650)")
 message(STATUS "CUDA Separable Compilation: Enabled")
 message(STATUS "C++ Standard: 17")
+
+if(PARALLELNET_BUILD_MPI)
+    find_package(MPI REQUIRED)
+    add_executable(ring_allreduce mpi/ring_allreduce.cpp)
+    target_link_libraries(ring_allreduce PRIVATE MPI::MPI_CXX)
+    if(MSVC)
+        target_compile_options(ring_allreduce PRIVATE /W4)
+    else()
+        target_compile_options(ring_allreduce PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endif()

@@ -95,6 +95,7 @@ Network::Network(std::vector<Dense> layers)
 	std::vector<float> host_out_bias(static_cast<size_t>(out_features_), 0.0f);
 	out_weights_.copy_from_host(host_out_weights.data(), host_out_weights.size());
 	out_bias_.copy_from_host(host_out_bias.data(), host_out_bias.size());
+	batch_norm_ = BatchNorm(hidden_features_);
 }
 
 float Network::forward(const FloatBuffer& input, const LabelBuffer& labels) {
@@ -111,9 +112,11 @@ float Network::forward(const FloatBuffer& input, const LabelBuffer& labels) {
 
 	FloatBuffer hidden_buf(hidden_size);
 	layers_[0].forward(input, hidden_buf);
+	FloatBuffer norm_buf(hidden_size);
+	batch_norm_.forward(hidden_buf, norm_buf);
 
 	NetworkCache& cache = get_cache(last_batch_, hidden_features_, out_features_);
-	CUDA_CHECK(cudaMemcpy(cache.hidden.data(), hidden_buf.data(),
+	CUDA_CHECK(cudaMemcpy(cache.hidden.data(), norm_buf.data(),
 					sizeof(float) * cache.hidden.size(), cudaMemcpyDeviceToDevice));
 
 	transpose_matrix_gpu(out_weights_.data(), cache.out_weights_t.data(),
@@ -164,34 +167,46 @@ void Network::backward() {
 	FloatBuffer hidden_grad_buf(cache.hidden.size());
 	tiled_matmul_gpu(cache.grad_logits.data(), out_weights_.data(), hidden_grad_buf.data(),
 					static_cast<int>(last_batch_), hidden_features_, out_features_);
+	FloatBuffer bn_grad_buf(cache.hidden.size());
+	batch_norm_.backward(hidden_grad_buf, bn_grad_buf);
 	FloatBuffer grad_in_buf(last_batch_ * static_cast<size_t>(in_features_));
-	layers_[0].backward(hidden_grad_buf, grad_in_buf);
+	layers_[0].backward(bn_grad_buf, grad_in_buf);
 }
 
 void Network::sgd_step(float learning_rate, GradientSync* sync) {
 	auto params = layers_[0].parameters();
 	auto grads = layers_[0].gradients();
+	auto bn_params = batch_norm_.parameters();
+	auto bn_grads = batch_norm_.gradients();
 	if (sync != nullptr) {
 		std::vector<float> host_dweights(grads[0]->size());
 		std::vector<float> host_dbias(grads[1]->size());
 		std::vector<float> host_dout_weights(dout_weights_.size());
 		std::vector<float> host_dout_bias(dout_bias_.size());
+		std::vector<float> host_dgamma(bn_grads[0]->size());
+		std::vector<float> host_dbeta(bn_grads[1]->size());
 
 		grads[0]->copy_to_host(host_dweights.data(), host_dweights.size());
 		grads[1]->copy_to_host(host_dbias.data(), host_dbias.size());
 		dout_weights_.copy_to_host(host_dout_weights.data(), host_dout_weights.size());
 		dout_bias_.copy_to_host(host_dout_bias.data(), host_dout_bias.size());
+		bn_grads[0]->copy_to_host(host_dgamma.data(), host_dgamma.size());
+		bn_grads[1]->copy_to_host(host_dbeta.data(), host_dbeta.size());
 
 		// Synchronize all gradient buffers across ranks before applying SGD.
 		sync->allreduce_mean(host_dweights.data(), static_cast<int>(host_dweights.size()));
 		sync->allreduce_mean(host_dbias.data(), static_cast<int>(host_dbias.size()));
 		sync->allreduce_mean(host_dout_weights.data(), static_cast<int>(host_dout_weights.size()));
 		sync->allreduce_mean(host_dout_bias.data(), static_cast<int>(host_dout_bias.size()));
+		sync->allreduce_mean(host_dgamma.data(), static_cast<int>(host_dgamma.size()));
+		sync->allreduce_mean(host_dbeta.data(), static_cast<int>(host_dbeta.size()));
 
 		grads[0]->copy_from_host(host_dweights.data(), host_dweights.size());
 		grads[1]->copy_from_host(host_dbias.data(), host_dbias.size());
 		dout_weights_.copy_from_host(host_dout_weights.data(), host_dout_weights.size());
 		dout_bias_.copy_from_host(host_dout_bias.data(), host_dout_bias.size());
+		bn_grads[0]->copy_from_host(host_dgamma.data(), host_dgamma.size());
+		bn_grads[1]->copy_from_host(host_dbeta.data(), host_dbeta.size());
 	}
 
 	sgd_update_gpu(params[0]->data(), grads[0]->data(), learning_rate,
@@ -202,6 +217,10 @@ void Network::sgd_step(float learning_rate, GradientSync* sync) {
 					static_cast<int>(dout_weights_.size()));
 	sgd_update_gpu(out_bias_.data(), dout_bias_.data(), learning_rate,
 					static_cast<int>(dout_bias_.size()));
+	sgd_update_gpu(bn_params[0]->data(), bn_grads[0]->data(), learning_rate,
+					static_cast<int>(bn_grads[0]->size()));
+	sgd_update_gpu(bn_params[1]->data(), bn_grads[1]->data(), learning_rate,
+					static_cast<int>(bn_grads[1]->size()));
 }
 
 float Network::get_accuracy(const FloatBuffer& input, const LabelBuffer& labels) {
@@ -219,10 +238,12 @@ float Network::get_accuracy(const FloatBuffer& input, const LabelBuffer& labels)
 	FloatBuffer hidden_buf(batch * static_cast<size_t>(hidden_features_));
 	input_buf.copy_from_host(host_input.data(), host_input.size());
 	layers_[0].forward(input_buf, hidden_buf);
+	FloatBuffer norm_buf(hidden_buf.size());
+	batch_norm_.forward(hidden_buf, norm_buf);
 
 	NetworkCache& cache = get_cache(batch, hidden_features_, out_features_);
 	last_probs_.assign(batch * static_cast<size_t>(out_features_), 0.0f);
-	CUDA_CHECK(cudaMemcpy(cache.hidden.data(), hidden_buf.data(),
+	CUDA_CHECK(cudaMemcpy(cache.hidden.data(), norm_buf.data(),
 					sizeof(float) * cache.hidden.size(), cudaMemcpyDeviceToDevice));
 	transpose_matrix_gpu(out_weights_.data(), cache.out_weights_t.data(),
 					out_features_, hidden_features_);
@@ -268,6 +289,11 @@ void Network::save_weights(const std::string& path) const {
 	std::vector<float> host_b0(params[1]->size());
 	params[0]->copy_to_host(host_w0.data(), host_w0.size());
 	params[1]->copy_to_host(host_b0.data(), host_b0.size());
+	auto bn_params = batch_norm_.parameters();
+	std::vector<float> host_gamma(bn_params[0]->size());
+	std::vector<float> host_beta(bn_params[1]->size());
+	bn_params[0]->copy_to_host(host_gamma.data(), host_gamma.size());
+	bn_params[1]->copy_to_host(host_beta.data(), host_beta.size());
 
 	std::vector<float> host_w1(out_weights_.size());
 	std::vector<float> host_b1(out_bias_.size());
@@ -285,6 +311,8 @@ void Network::save_weights(const std::string& path) const {
 	out.write(reinterpret_cast<const char*>(host_b0.data()), host_b0.size() * sizeof(float));
 	out.write(reinterpret_cast<const char*>(host_w1.data()), host_w1.size() * sizeof(float));
 	out.write(reinterpret_cast<const char*>(host_b1.data()), host_b1.size() * sizeof(float));
+	out.write(reinterpret_cast<const char*>(host_gamma.data()), host_gamma.size() * sizeof(float));
+	out.write(reinterpret_cast<const char*>(host_beta.data()), host_beta.size() * sizeof(float));
 }
 
 void Network::load_weights(const std::string& path) {
@@ -313,9 +341,26 @@ void Network::load_weights(const std::string& path) {
 	in.read(reinterpret_cast<char*>(host_w1.data()), host_w1.size() * sizeof(float));
 	in.read(reinterpret_cast<char*>(host_b1.data()), host_b1.size() * sizeof(float));
 
+	auto bn_params = batch_norm_.parameters();
+	std::vector<float> host_gamma(bn_params[0]->size(), 1.0f);
+	std::vector<float> host_beta(bn_params[1]->size(), 0.0f);
+	std::streampos payload_pos = in.tellg();
+	in.seekg(0, std::ios::end);
+	std::streampos payload_end = in.tellg();
+	in.seekg(payload_pos);
+	const std::streamoff remaining = payload_end - payload_pos;
+	const std::streamoff bn_bytes = static_cast<std::streamoff>(
+		host_gamma.size() + host_beta.size()) * static_cast<std::streamoff>(sizeof(float));
+	if (remaining >= bn_bytes) {
+		in.read(reinterpret_cast<char*>(host_gamma.data()), host_gamma.size() * sizeof(float));
+		in.read(reinterpret_cast<char*>(host_beta.data()), host_beta.size() * sizeof(float));
+	}
+
 	auto params = layers_[0].parameters();
 	params[0]->copy_from_host(host_w0.data(), host_w0.size());
 	params[1]->copy_from_host(host_b0.data(), host_b0.size());
 	out_weights_.copy_from_host(host_w1.data(), host_w1.size());
 	out_bias_.copy_from_host(host_b1.data(), host_b1.size());
+	bn_params[0]->copy_from_host(host_gamma.data(), host_gamma.size());
+	bn_params[1]->copy_from_host(host_beta.data(), host_beta.size());
 }
