@@ -2,9 +2,7 @@
 
 #include <cmath>
 #include <cstdio>
-#include <memory>
 #include <random>
-#include <unordered_map>
 
 #include <cuda_runtime.h>
 
@@ -18,55 +16,6 @@ void bias_add_gpu(float* out, const float* bias, int batch, int features);
 void sum_over_batch_gpu(const float* grad, float* db, int batch, int features);
 void transpose_matrix_gpu(const float* in, float* out, int rows, int cols);
 
-namespace {
-struct DenseCache {
-	std::unique_ptr<FloatBuffer> input;
-	std::unique_ptr<FloatBuffer> pre_relu;
-	std::unique_ptr<FloatBuffer> grad_relu;
-	std::unique_ptr<FloatBuffer> grad_relu_t;
-	std::unique_ptr<FloatBuffer> weights_t;
-	size_t input_size = 0;
-	size_t pre_relu_size = 0;
-	size_t grad_size = 0;
-	size_t grad_t_size = 0;
-	size_t weights_t_size = 0;
-};
-
-DenseCache& get_cache(const Dense* layer, size_t batch, int in_features, int out_features) {
-	static std::unordered_map<const Dense*, DenseCache> cache_map;
-	DenseCache& cache = cache_map[layer];
-
-	size_t input_size = batch * static_cast<size_t>(in_features);
-	size_t pre_relu_size = batch * static_cast<size_t>(out_features);
-	size_t grad_size = pre_relu_size;
-	size_t grad_t_size = static_cast<size_t>(out_features) * batch;
-	size_t weights_t_size = static_cast<size_t>(in_features) * out_features;
-
-	if (!cache.input || cache.input_size != input_size) {
-		cache.input = std::make_unique<FloatBuffer>(input_size);
-		cache.input_size = input_size;
-	}
-	if (!cache.pre_relu || cache.pre_relu_size != pre_relu_size) {
-		cache.pre_relu = std::make_unique<FloatBuffer>(pre_relu_size);
-		cache.pre_relu_size = pre_relu_size;
-	}
-	if (!cache.grad_relu || cache.grad_size != grad_size) {
-		cache.grad_relu = std::make_unique<FloatBuffer>(grad_size);
-		cache.grad_size = grad_size;
-	}
-	if (!cache.grad_relu_t || cache.grad_t_size != grad_t_size) {
-		cache.grad_relu_t = std::make_unique<FloatBuffer>(grad_t_size);
-		cache.grad_t_size = grad_t_size;
-	}
-	if (!cache.weights_t || cache.weights_t_size != weights_t_size) {
-		cache.weights_t = std::make_unique<FloatBuffer>(weights_t_size);
-		cache.weights_t_size = weights_t_size;
-	}
-
-	return cache;
-}
-}
-
 Dense::Dense(int in_features, int out_features)
 	: in_features_(in_features),
 	  out_features_(out_features),
@@ -74,6 +23,7 @@ Dense::Dense(int in_features, int out_features)
 	  bias_(static_cast<size_t>(out_features)),
 	  dweights_(static_cast<size_t>(out_features) * in_features),
 	  dbias_(static_cast<size_t>(out_features)),
+	  cache_(),
 	  last_batch_(0) {
 	std::mt19937 rng(1337);
 	float stddev = std::sqrt(2.0f / static_cast<float>(in_features_));
@@ -91,6 +41,35 @@ Dense::Dense(int in_features, int out_features)
 	std::vector<float> host_bias(bias_.size(), 0.0f);
 	weights_.copy_from_host(host_weights.data(), host_weights.size());
 	bias_.copy_from_host(host_bias.data(), host_bias.size());
+}
+
+void Dense::ensure_cache(size_t batch) {
+	size_t input_size = batch * static_cast<size_t>(in_features_);
+	size_t pre_relu_size = batch * static_cast<size_t>(out_features_);
+	size_t grad_size = pre_relu_size;
+	size_t grad_t_size = static_cast<size_t>(out_features_) * batch;
+	size_t weights_t_size = static_cast<size_t>(in_features_) * out_features_;
+
+	if (cache_.input_size != input_size) {
+		cache_.input = FloatBuffer(input_size);
+		cache_.input_size = input_size;
+	}
+	if (cache_.pre_relu_size != pre_relu_size) {
+		cache_.pre_relu = FloatBuffer(pre_relu_size);
+		cache_.pre_relu_size = pre_relu_size;
+	}
+	if (cache_.grad_size != grad_size) {
+		cache_.grad_relu = FloatBuffer(grad_size);
+		cache_.grad_size = grad_size;
+	}
+	if (cache_.grad_t_size != grad_t_size) {
+		cache_.grad_relu_t = FloatBuffer(grad_t_size);
+		cache_.grad_t_size = grad_t_size;
+	}
+	if (cache_.weights_t_size != weights_t_size) {
+		cache_.weights_t = FloatBuffer(weights_t_size);
+		cache_.weights_t_size = weights_t_size;
+	}
 }
 
 void Dense::forward(const FloatBuffer& in, FloatBuffer& out) {
@@ -112,17 +91,17 @@ void Dense::forward(const FloatBuffer& in, FloatBuffer& out) {
 	}
 
 	last_batch_ = in.size() / static_cast<size_t>(in_features_);
-
-	DenseCache& cache = get_cache(this, last_batch_, in_features_, out_features_);
-	CUDA_CHECK(cudaMemcpy(cache.input->data(), in.data(), sizeof(float) * cache.input_size,
+	ensure_cache(last_batch_);
+	DenseCache& cache = cache_;
+	CUDA_CHECK(cudaMemcpy(cache.input.data(), in.data(), sizeof(float) * cache.input_size,
 					cudaMemcpyDeviceToDevice));
 
-	transpose_matrix_gpu(weights_.data(), cache.weights_t->data(), out_features_, in_features_);
-	tiled_matmul_gpu(cache.input->data(), cache.weights_t->data(), cache.pre_relu->data(),
+	transpose_matrix_gpu(weights_.data(), cache.weights_t.data(), out_features_, in_features_);
+	tiled_matmul_gpu(cache.input.data(), cache.weights_t.data(), cache.pre_relu.data(),
 					static_cast<int>(last_batch_), out_features_, in_features_);
-	bias_add_gpu(cache.pre_relu->data(), bias_.data(), static_cast<int>(last_batch_), out_features_);
+	bias_add_gpu(cache.pre_relu.data(), bias_.data(), static_cast<int>(last_batch_), out_features_);
 
-	CUDA_CHECK(cudaMemcpy(out.data(), cache.pre_relu->data(), sizeof(float) * cache.pre_relu_size,
+	CUDA_CHECK(cudaMemcpy(out.data(), cache.pre_relu.data(), sizeof(float) * cache.pre_relu_size,
 					cudaMemcpyDeviceToDevice));
 	relu_forward_gpu(out.data(), static_cast<int>(cache.pre_relu_size));
 }
@@ -141,20 +120,21 @@ void Dense::backward(const FloatBuffer& grad_out, FloatBuffer& grad_in) {
 		return;
 	}
 
-	DenseCache& cache = get_cache(this, last_batch_, in_features_, out_features_);
-	CUDA_CHECK(cudaMemcpy(cache.grad_relu->data(), grad_out.data(), sizeof(float) * cache.grad_size,
+	ensure_cache(last_batch_);
+	DenseCache& cache = cache_;
+	CUDA_CHECK(cudaMemcpy(cache.grad_relu.data(), grad_out.data(), sizeof(float) * cache.grad_size,
 					cudaMemcpyDeviceToDevice));
-	relu_backward_gpu(cache.pre_relu->data(), cache.grad_relu->data(), static_cast<int>(cache.grad_size));
+	relu_backward_gpu(cache.pre_relu.data(), cache.grad_relu.data(), static_cast<int>(cache.grad_size));
 
-	transpose_matrix_gpu(cache.grad_relu->data(), cache.grad_relu_t->data(),
+	transpose_matrix_gpu(cache.grad_relu.data(), cache.grad_relu_t.data(),
 					static_cast<int>(last_batch_), out_features_);
-	tiled_matmul_gpu(cache.grad_relu_t->data(), cache.input->data(), dweights_.data(),
+	tiled_matmul_gpu(cache.grad_relu_t.data(), cache.input.data(), dweights_.data(),
 					out_features_, in_features_, static_cast<int>(last_batch_));
 
-	sum_over_batch_gpu(cache.grad_relu->data(), dbias_.data(),
+	sum_over_batch_gpu(cache.grad_relu.data(), dbias_.data(),
 					static_cast<int>(last_batch_), out_features_);
 
-	tiled_matmul_gpu(cache.grad_relu->data(), weights_.data(), grad_in.data(),
+	tiled_matmul_gpu(cache.grad_relu.data(), weights_.data(), grad_in.data(),
 					static_cast<int>(last_batch_), in_features_, out_features_);
 }
 

@@ -30,6 +30,18 @@ public:
 	TimingStats timing_ms() const;
 
 private:
+	struct NetworkCache {
+		FloatBuffer hidden;
+		FloatBuffer logits;
+		FloatBuffer probs;
+		FloatBuffer grad_logits;
+		FloatBuffer grad_logits_t;
+		FloatBuffer out_weights_t;
+		size_t cached_batch = 0;
+	};
+
+	void ensure_cache(size_t batch);
+
 	std::vector<Dense> layers_;
 	std::vector<float> last_probs_;
 	std::vector<int> last_labels_;
@@ -38,6 +50,7 @@ private:
 	FloatBuffer out_bias_;
 	FloatBuffer dout_weights_;
 	FloatBuffer dout_bias_;
+	NetworkCache cache_;
 	size_t last_batch_;
 	int in_features_;
 	int hidden_features_;

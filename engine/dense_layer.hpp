@@ -20,12 +20,28 @@ public:
 	int out_features() const;
 
 private:
+	struct DenseCache {
+		FloatBuffer input;
+		FloatBuffer pre_relu;
+		FloatBuffer grad_relu;
+		FloatBuffer grad_relu_t;
+		FloatBuffer weights_t;
+		size_t input_size = 0;
+		size_t pre_relu_size = 0;
+		size_t grad_size = 0;
+		size_t grad_t_size = 0;
+		size_t weights_t_size = 0;
+	};
+
+	void ensure_cache(size_t batch);
+
 	int in_features_;
 	int out_features_;
 	FloatBuffer weights_;
 	FloatBuffer bias_;
 	FloatBuffer dweights_;
 	FloatBuffer dbias_;
+	DenseCache cache_;
 	size_t last_batch_;
 };
 

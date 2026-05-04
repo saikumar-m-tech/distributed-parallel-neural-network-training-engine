@@ -36,11 +36,13 @@ def _softmax_reference(x: np.ndarray) -> np.ndarray:
 
 
 def _load_sgd_module() -> "cp.RawModule":
-	source_path = Path(__file__).resolve().parents[1] / "kernels" / "sgd_update.cu"
+	repo_root = Path(__file__).resolve().parents[1]
+	kernels_dir = repo_root / "kernels"
+	source_path = kernels_dir / "sgd_update.cu"
 	source = source_path.read_text(encoding="utf-8")
 	return cp.RawModule(
 		code=source,
-		options=("--std=c++17",),
+		options=("--std=c++17", f"-I{kernels_dir}"),
 		name_expressions=("sgd_update",),
 	)
 

@@ -149,10 +149,13 @@ ext_modules = [
 		sources=[
 			"bridge/bindings.cpp",
 			"engine/dense_layer.cpp",
+			"engine/batch_norm_layer.cpp",
 			"engine/network.cpp",
 			"mpi/gradient_sync.cpp",
 			"kernels/matmul.cu",
 			"kernels/activations.cu",
+			"kernels/batch_norm.cu",
+			"kernels/sgd_update.cu",
 		],
 		include_dirs=[
     str(ROOT / "engine"),

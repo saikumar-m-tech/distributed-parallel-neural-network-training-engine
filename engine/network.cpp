@@ -6,7 +6,6 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
-#include <memory>
 #include <random>
 #include <chrono>
 
@@ -24,38 +23,6 @@ void sum_over_batch_gpu(const float* grad, float* db, int batch, int features);
 void transpose_matrix_gpu(const float* in, float* out, int rows, int cols);
 void sgd_update_gpu(float* weights, const float* gradients, float learning_rate, int n);
 
-namespace {
-struct NetworkCache {
-	FloatBuffer hidden;
-	FloatBuffer logits;
-	FloatBuffer probs;
-	FloatBuffer grad_logits;
-	FloatBuffer grad_logits_t;
-	FloatBuffer out_weights_t;
-	NetworkCache(size_t hidden_size, size_t logits_size, size_t out_weights_t_size)
-		: hidden(hidden_size),
-		  logits(logits_size),
-		  probs(logits_size),
-		  grad_logits(logits_size),
-		  grad_logits_t(static_cast<size_t>(out_weights_t_size)),
-		  out_weights_t(out_weights_t_size) {}
-};
-
-NetworkCache& get_cache(size_t batch, int hidden_features, int out_features) {
-	static std::unique_ptr<NetworkCache> cache;
-	static size_t cached_batch = 0;
-	if (!cache || cached_batch != batch) {
-		size_t hidden_size = batch * static_cast<size_t>(hidden_features);
-		size_t logits_size = batch * static_cast<size_t>(out_features);
-		size_t out_weights_t_size = static_cast<size_t>(hidden_features) * out_features;
-		cache = std::make_unique<NetworkCache>(hidden_size, logits_size, out_weights_t_size);
-		cached_batch = batch;
-	}
-	return *cache;
-}
-
-} // namespace
-
 Network::Network(std::vector<Dense> layers)
 	: layers_(std::move(layers)),
 	  last_probs_(),
@@ -64,6 +31,7 @@ Network::Network(std::vector<Dense> layers)
 	  out_bias_(),
 	  dout_weights_(),
 	  dout_bias_(),
+	  cache_(),
 	  last_batch_(0),
 	  in_features_(0),
 	  hidden_features_(0),
@@ -100,6 +68,33 @@ Network::Network(std::vector<Dense> layers)
 	batch_norm_ = BatchNorm(hidden_features_);
 }
 
+void Network::ensure_cache(size_t batch) {
+	const size_t hidden_size = batch * static_cast<size_t>(hidden_features_);
+	const size_t logits_size = batch * static_cast<size_t>(out_features_);
+	const size_t grad_logits_t_size = static_cast<size_t>(out_features_) * batch;
+	const size_t out_weights_t_size = static_cast<size_t>(hidden_features_) * out_features_;
+
+	if (cache_.hidden.size() != hidden_size) {
+		cache_.hidden = FloatBuffer(hidden_size);
+	}
+	if (cache_.logits.size() != logits_size) {
+		cache_.logits = FloatBuffer(logits_size);
+	}
+	if (cache_.probs.size() != logits_size) {
+		cache_.probs = FloatBuffer(logits_size);
+	}
+	if (cache_.grad_logits.size() != logits_size) {
+		cache_.grad_logits = FloatBuffer(logits_size);
+	}
+	if (cache_.grad_logits_t.size() != grad_logits_t_size) {
+		cache_.grad_logits_t = FloatBuffer(grad_logits_t_size);
+	}
+	if (cache_.out_weights_t.size() != out_weights_t_size) {
+		cache_.out_weights_t = FloatBuffer(out_weights_t_size);
+	}
+	cache_.cached_batch = batch;
+}
+
 float Network::forward(const FloatBuffer& input, const LabelBuffer& labels) {
 	if (input.size() % static_cast<size_t>(in_features_) != 0) {
 		std::fprintf(stderr, "Network forward input shape mismatch\n");
@@ -119,21 +114,21 @@ float Network::forward(const FloatBuffer& input, const LabelBuffer& labels) {
 	FloatBuffer norm_buf(hidden_size);
 	batch_norm_.forward(hidden_buf, norm_buf);
 
-	NetworkCache& cache = get_cache(last_batch_, hidden_features_, out_features_);
-	CUDA_CHECK(cudaMemcpy(cache.hidden.data(), norm_buf.data(),
-					sizeof(float) * cache.hidden.size(), cudaMemcpyDeviceToDevice));
+	ensure_cache(last_batch_);
+	CUDA_CHECK(cudaMemcpy(cache_.hidden.data(), norm_buf.data(),
+					sizeof(float) * cache_.hidden.size(), cudaMemcpyDeviceToDevice));
 
-	transpose_matrix_gpu(out_weights_.data(), cache.out_weights_t.data(),
+	transpose_matrix_gpu(out_weights_.data(), cache_.out_weights_t.data(),
 					out_features_, hidden_features_);
-	tiled_matmul_gpu(cache.hidden.data(), cache.out_weights_t.data(), cache.logits.data(),
+	tiled_matmul_gpu(cache_.hidden.data(), cache_.out_weights_t.data(), cache_.logits.data(),
 					static_cast<int>(last_batch_), out_features_, hidden_features_);
-	bias_add_gpu(cache.logits.data(), out_bias_.data(), static_cast<int>(last_batch_), out_features_);
+	bias_add_gpu(cache_.logits.data(), out_bias_.data(), static_cast<int>(last_batch_), out_features_);
 
-	softmax_forward_gpu(cache.logits.data(), cache.probs.data(),
+	softmax_forward_gpu(cache_.logits.data(), cache_.probs.data(),
 					static_cast<int>(last_batch_), out_features_);
 
 	last_probs_.assign(logits_size, 0.0f);
-	cache.probs.copy_to_host(last_probs_.data(), last_probs_.size());
+	cache_.probs.copy_to_host(last_probs_.data(), last_probs_.size());
 	timer.stop();
 	timing_.compute_ms += static_cast<double>(timer.elapsed_ms());
 
@@ -157,26 +152,26 @@ void Network::backward() {
 	GpuTimer timer;
 	timer.start();
 
-	NetworkCache& cache = get_cache(last_batch_, hidden_features_, out_features_);
+	ensure_cache(last_batch_);
 
 	LabelBuffer labels_buf(last_labels_.size());
 	labels_buf.copy_from_host(last_labels_.data(), last_labels_.size());
 
-	grad_logits_gpu(cache.probs.data(), labels_buf.data(), cache.grad_logits.data(),
+	grad_logits_gpu(cache_.probs.data(), labels_buf.data(), cache_.grad_logits.data(),
 				static_cast<int>(last_batch_), out_features_);
 
-	transpose_matrix_gpu(cache.grad_logits.data(), cache.grad_logits_t.data(),
+	transpose_matrix_gpu(cache_.grad_logits.data(), cache_.grad_logits_t.data(),
 					static_cast<int>(last_batch_), out_features_);
 
-	tiled_matmul_gpu(cache.grad_logits_t.data(), cache.hidden.data(), dout_weights_.data(),
+	tiled_matmul_gpu(cache_.grad_logits_t.data(), cache_.hidden.data(), dout_weights_.data(),
 					out_features_, hidden_features_, static_cast<int>(last_batch_));
-	sum_over_batch_gpu(cache.grad_logits.data(), dout_bias_.data(),
+	sum_over_batch_gpu(cache_.grad_logits.data(), dout_bias_.data(),
 					static_cast<int>(last_batch_), out_features_);
 
-	FloatBuffer hidden_grad_buf(cache.hidden.size());
-	tiled_matmul_gpu(cache.grad_logits.data(), out_weights_.data(), hidden_grad_buf.data(),
+	FloatBuffer hidden_grad_buf(cache_.hidden.size());
+	tiled_matmul_gpu(cache_.grad_logits.data(), out_weights_.data(), hidden_grad_buf.data(),
 					static_cast<int>(last_batch_), hidden_features_, out_features_);
-	FloatBuffer bn_grad_buf(cache.hidden.size());
+	FloatBuffer bn_grad_buf(cache_.hidden.size());
 	batch_norm_.backward(hidden_grad_buf, bn_grad_buf);
 	FloatBuffer grad_in_buf(last_batch_ * static_cast<size_t>(in_features_));
 	layers_[0].backward(bn_grad_buf, grad_in_buf);
@@ -288,18 +283,18 @@ float Network::get_accuracy(const FloatBuffer& input, const LabelBuffer& labels)
 	FloatBuffer norm_buf(hidden_buf.size());
 	batch_norm_.forward(hidden_buf, norm_buf);
 
-	NetworkCache& cache = get_cache(batch, hidden_features_, out_features_);
+	ensure_cache(batch);
 	last_probs_.assign(batch * static_cast<size_t>(out_features_), 0.0f);
-	CUDA_CHECK(cudaMemcpy(cache.hidden.data(), norm_buf.data(),
-					sizeof(float) * cache.hidden.size(), cudaMemcpyDeviceToDevice));
-	transpose_matrix_gpu(out_weights_.data(), cache.out_weights_t.data(),
+	CUDA_CHECK(cudaMemcpy(cache_.hidden.data(), norm_buf.data(),
+					sizeof(float) * cache_.hidden.size(), cudaMemcpyDeviceToDevice));
+	transpose_matrix_gpu(out_weights_.data(), cache_.out_weights_t.data(),
 					out_features_, hidden_features_);
-	tiled_matmul_gpu(cache.hidden.data(), cache.out_weights_t.data(), cache.logits.data(),
+	tiled_matmul_gpu(cache_.hidden.data(), cache_.out_weights_t.data(), cache_.logits.data(),
 					static_cast<int>(batch), out_features_, hidden_features_);
-	bias_add_gpu(cache.logits.data(), out_bias_.data(), static_cast<int>(batch), out_features_);
-	softmax_forward_gpu(cache.logits.data(), cache.probs.data(),
+	bias_add_gpu(cache_.logits.data(), out_bias_.data(), static_cast<int>(batch), out_features_);
+	softmax_forward_gpu(cache_.logits.data(), cache_.probs.data(),
 					static_cast<int>(batch), out_features_);
-	cache.probs.copy_to_host(last_probs_.data(), last_probs_.size());
+	cache_.probs.copy_to_host(last_probs_.data(), last_probs_.size());
 
 	int correct = 0;
 	for (size_t b = 0; b < batch; ++b) {
