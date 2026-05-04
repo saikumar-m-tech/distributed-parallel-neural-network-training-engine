@@ -1,15 +1,8 @@
-import argparse
-import json
-import math
-import os
-import sys
-import subprocess
-from pathlib import Path
-
-import cupy as cp
-import matplotlib.pyplot as plt
-import numpy as np
 def configure_windows_cuda_dlls():
+	import os
+	import sys
+	from pathlib import Path
+
 	if sys.platform != "win32":
 		return
 
@@ -43,6 +36,21 @@ def configure_windows_cuda_dlls():
 			os.add_dll_directory(str(default_cuda))
 		except (FileNotFoundError, OSError):
 			pass
+
+
+configure_windows_cuda_dlls()
+
+import argparse
+import json
+import math
+import os
+import sys
+import subprocess
+from pathlib import Path
+
+import cupy as cp
+import matplotlib.pyplot as plt
+import numpy as np
 
 def load_matmul_module():
 	repo_root = Path(__file__).resolve().parents[1]

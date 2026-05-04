@@ -13,11 +13,13 @@ cp = pytest.importorskip("cupy")
 
 
 def _load_activation_module() -> "cp.RawModule":
-	source_path = Path(__file__).resolve().parents[1] / "kernels" / "activations.cu"
+	repo_root = Path(__file__).resolve().parents[1]
+	kernels_dir = repo_root / "kernels"
+	source_path = kernels_dir / "activations.cu"
 	source = source_path.read_text(encoding="utf-8")
 	return cp.RawModule(
 		code=source,
-		options=("--std=c++17",),
+		options=("--std=c++17", f"-I{kernels_dir}"),
 		name_expressions=(
 			"relu_forward",
 			"relu_backward",
@@ -143,13 +145,37 @@ def test_sgd_update(sgd_module):
 	block = (256, 1, 1)
 	grid = (math.ceil(n / block[0]), 1, 1)
 	kernel = sgd_module.get_function("sgd_update")
+	weights_gpu = cp.asarray(weights)
+	gradients_gpu = cp.asarray(gradients)
 
-	for _ in range(2):
-		weights_gpu = cp.asarray(weights)
-		gradients_gpu = cp.asarray(gradients)
-		kernel(grid, block, (weights_gpu, gradients_gpu, learning_rate, np.int32(n)))
-		cp.cuda.runtime.deviceSynchronize()
+	kernel(grid, block, (weights_gpu, gradients_gpu, learning_rate, np.int32(n)))
+	cp.cuda.runtime.deviceSynchronize()
 
-		result = cp.asnumpy(weights_gpu)
-		ref = np.full(n, 0.999, dtype=np.float32)
-		assert np.allclose(result, ref, rtol=1e-6, atol=1e-6)
+	result = cp.asnumpy(weights_gpu)
+	ref = np.full(n, 0.999, dtype=np.float32)
+	assert np.allclose(result, ref, rtol=1e-6, atol=1e-6)
+
+	kernel(grid, block, (weights_gpu, gradients_gpu, learning_rate, np.int32(n)))
+	cp.cuda.runtime.deviceSynchronize()
+
+	result = cp.asnumpy(weights_gpu)
+	ref = np.full(n, 0.998, dtype=np.float32)
+	assert np.allclose(result, ref, rtol=1e-6, atol=1e-6)
+
+	large_n = 100_000
+	weights_large = np.full(large_n, 2.0, dtype=np.float32)
+	gradients_large = np.full(large_n, 0.5, dtype=np.float32)
+	weights_large_gpu = cp.asarray(weights_large)
+	gradients_large_gpu = cp.asarray(gradients_large)
+	large_grid = (math.ceil(large_n / block[0]), 1, 1)
+
+	kernel(
+		large_grid,
+		block,
+		(weights_large_gpu, gradients_large_gpu, learning_rate, np.int32(large_n)),
+	)
+	cp.cuda.runtime.deviceSynchronize()
+
+	result = cp.asnumpy(weights_large_gpu)
+	ref = np.full(large_n, 1.995, dtype=np.float32)
+	assert np.allclose(result, ref, rtol=1e-6, atol=1e-6)
