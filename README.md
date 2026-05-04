@@ -23,11 +23,13 @@ pip install numpy torchvision pybind11 mpi4py pytest
 Set CUDA path (Windows examples):
 
 PowerShell:
+
 ```
 $env:CUDA_PATH="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.0"
 ```
 
 Git Bash:
+
 ```
 export CUDA_PATH="/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.0"
 ```
@@ -41,16 +43,19 @@ pip install -e .
 ## Run tests
 
 CUDA kernel tests:
+
 ```
 pytest tests/test_kernels.py
 ```
 
 PyBind bridge tests:
+
 ```
 pytest tests/test_bridge.py
 ```
 
 MPI tests:
+
 ```
 mpiexec -n 2 ./test_mpi
 ```
@@ -58,16 +63,19 @@ mpiexec -n 2 ./test_mpi
 ## Train on CIFAR-10
 
 Single rank:
+
 ```
 mpirun -n 1 python python/train.py
 ```
 
 Two ranks:
+
 ```
 mpirun -n 2 python python/train.py
 ```
 
 Useful speed flags:
+
 ```
 mpirun -n 1 python python/train.py --batch-size 512 --limit-samples 20000 --epochs 5
 ```

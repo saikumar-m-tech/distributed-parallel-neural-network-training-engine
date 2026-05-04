@@ -21,6 +21,7 @@ void grad_logits_gpu(const float* probs, const int* labels, float* grad_logits,
 void bias_add_gpu(float* out, const float* bias, int batch, int features);
 void sum_over_batch_gpu(const float* grad, float* db, int batch, int features);
 void transpose_matrix_gpu(const float* in, float* out, int rows, int cols);
+void sgd_update_gpu(float* weights, const float* gradients, float learning_rate, int n);
 
 namespace {
 struct NetworkCache {
@@ -170,50 +171,37 @@ void Network::backward() {
 void Network::sgd_step(float learning_rate, GradientSync* sync) {
 	auto params = layers_[0].parameters();
 	auto grads = layers_[0].gradients();
-	std::vector<float> host_weights(params[0]->size());
-	std::vector<float> host_bias(params[1]->size());
-	std::vector<float> host_dweights(grads[0]->size());
-	std::vector<float> host_dbias(grads[1]->size());
-	std::vector<float> host_out_weights(out_weights_.size());
-	std::vector<float> host_out_bias(out_bias_.size());
-	std::vector<float> host_dout_weights(dout_weights_.size());
-	std::vector<float> host_dout_bias(dout_bias_.size());
-
-	params[0]->copy_to_host(host_weights.data(), host_weights.size());
-	params[1]->copy_to_host(host_bias.data(), host_bias.size());
-	grads[0]->copy_to_host(host_dweights.data(), host_dweights.size());
-	grads[1]->copy_to_host(host_dbias.data(), host_dbias.size());
-	out_weights_.copy_to_host(host_out_weights.data(), host_out_weights.size());
-	out_bias_.copy_to_host(host_out_bias.data(), host_out_bias.size());
-	dout_weights_.copy_to_host(host_dout_weights.data(), host_dout_weights.size());
-	dout_bias_.copy_to_host(host_dout_bias.data(), host_dout_bias.size());
-
-	// Synchronize all gradient buffers across ranks before applying SGD.
 	if (sync != nullptr) {
+		std::vector<float> host_dweights(grads[0]->size());
+		std::vector<float> host_dbias(grads[1]->size());
+		std::vector<float> host_dout_weights(dout_weights_.size());
+		std::vector<float> host_dout_bias(dout_bias_.size());
+
+		grads[0]->copy_to_host(host_dweights.data(), host_dweights.size());
+		grads[1]->copy_to_host(host_dbias.data(), host_dbias.size());
+		dout_weights_.copy_to_host(host_dout_weights.data(), host_dout_weights.size());
+		dout_bias_.copy_to_host(host_dout_bias.data(), host_dout_bias.size());
+
+		// Synchronize all gradient buffers across ranks before applying SGD.
 		sync->allreduce_mean(host_dweights.data(), static_cast<int>(host_dweights.size()));
 		sync->allreduce_mean(host_dbias.data(), static_cast<int>(host_dbias.size()));
 		sync->allreduce_mean(host_dout_weights.data(), static_cast<int>(host_dout_weights.size()));
 		sync->allreduce_mean(host_dout_bias.data(), static_cast<int>(host_dout_bias.size()));
+
+		grads[0]->copy_from_host(host_dweights.data(), host_dweights.size());
+		grads[1]->copy_from_host(host_dbias.data(), host_dbias.size());
+		dout_weights_.copy_from_host(host_dout_weights.data(), host_dout_weights.size());
+		dout_bias_.copy_from_host(host_dout_bias.data(), host_dout_bias.size());
 	}
 
-	for (size_t i = 0; i < host_out_weights.size(); ++i) {
-		host_out_weights[i] -= learning_rate * host_dout_weights[i];
-	}
-	for (size_t i = 0; i < host_out_bias.size(); ++i) {
-		host_out_bias[i] -= learning_rate * host_dout_bias[i];
-	}
-
-	for (size_t i = 0; i < host_weights.size(); ++i) {
-		host_weights[i] -= learning_rate * host_dweights[i];
-	}
-	for (size_t i = 0; i < host_bias.size(); ++i) {
-		host_bias[i] -= learning_rate * host_dbias[i];
-	}
-
-	params[0]->copy_from_host(host_weights.data(), host_weights.size());
-	params[1]->copy_from_host(host_bias.data(), host_bias.size());
-	out_weights_.copy_from_host(host_out_weights.data(), host_out_weights.size());
-	out_bias_.copy_from_host(host_out_bias.data(), host_out_bias.size());
+	sgd_update_gpu(params[0]->data(), grads[0]->data(), learning_rate,
+					static_cast<int>(grads[0]->size()));
+	sgd_update_gpu(params[1]->data(), grads[1]->data(), learning_rate,
+					static_cast<int>(grads[1]->size()));
+	sgd_update_gpu(out_weights_.data(), dout_weights_.data(), learning_rate,
+					static_cast<int>(dout_weights_.size()));
+	sgd_update_gpu(out_bias_.data(), dout_bias_.data(), learning_rate,
+					static_cast<int>(dout_bias_.size()));
 }
 
 float Network::get_accuracy(const FloatBuffer& input, const LabelBuffer& labels) {

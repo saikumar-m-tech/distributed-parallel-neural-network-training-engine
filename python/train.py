@@ -31,6 +31,7 @@ def main() -> int:
 	parser.add_argument("--batch-size", type=int, default=None)
 	parser.add_argument("--epochs", type=int, default=None)
 	parser.add_argument("--limit-samples", type=int, default=None)
+	parser.add_argument("--log-csv", type=str, default=None)
 	args = parser.parse_args()
 
 	config = get_config()
@@ -66,6 +67,13 @@ def main() -> int:
 			f"Config: batch_size={config.batch_size} epochs={config.epochs} lr={config.learning_rate}",
 			flush=True,
 		)
+		if args.log_csv:
+			log_dir = os.path.dirname(args.log_csv)
+			if log_dir:
+				os.makedirs(log_dir, exist_ok=True)
+			if not os.path.exists(args.log_csv) or os.path.getsize(args.log_csv) == 0:
+				with open(args.log_csv, "w", encoding="utf-8") as handle:
+					handle.write("epoch,loss,accuracy,time_per_epoch,throughput\n")
 
 	total_start = time.perf_counter()
 
@@ -93,6 +101,11 @@ def main() -> int:
 				f"time={epoch_time:.2f}s samples/s={throughput:.1f}",
 				flush=True,
 			)
+			if args.log_csv:
+				with open(args.log_csv, "a", encoding="utf-8") as handle:
+					handle.write(
+						f"{epoch},{mean_loss:.6f},{acc:.6f},{epoch_time:.3f},{throughput:.1f}\n"
+					)
 
 	if rank == 0:
 		total_time = time.perf_counter() - total_start

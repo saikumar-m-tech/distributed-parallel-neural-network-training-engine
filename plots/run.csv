@@ -1,0 +1,2 @@
+epoch,loss,accuracy,time_per_epoch,throughput
+0,2.338318,0.207400,0.569,1798.5
