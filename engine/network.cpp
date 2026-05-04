@@ -8,6 +8,7 @@
 #include <fstream>
 #include <memory>
 #include <random>
+#include <chrono>
 
 #include <cuda_runtime.h>
 
@@ -66,7 +67,8 @@ Network::Network(std::vector<Dense> layers)
 	  last_batch_(0),
 	  in_features_(0),
 	  hidden_features_(0),
-	  out_features_(0) {
+	  out_features_(0),
+	  timing_() {
 	if (layers_.size() < 2) {
 		std::fprintf(stderr, "Network requires two Dense layers\n");
 		return;
@@ -110,6 +112,8 @@ float Network::forward(const FloatBuffer& input, const LabelBuffer& labels) {
 	const size_t hidden_size = last_batch_ * static_cast<size_t>(hidden_features_);
 	const size_t logits_size = last_batch_ * static_cast<size_t>(out_features_);
 
+	GpuTimer timer;
+	timer.start();
 	FloatBuffer hidden_buf(hidden_size);
 	layers_[0].forward(input, hidden_buf);
 	FloatBuffer norm_buf(hidden_size);
@@ -130,6 +134,8 @@ float Network::forward(const FloatBuffer& input, const LabelBuffer& labels) {
 
 	last_probs_.assign(logits_size, 0.0f);
 	cache.probs.copy_to_host(last_probs_.data(), last_probs_.size());
+	timer.stop();
+	timing_.compute_ms += static_cast<double>(timer.elapsed_ms());
 
 	float total_loss = 0.0f;
 	for (size_t b = 0; b < last_batch_; ++b) {
@@ -147,6 +153,9 @@ void Network::backward() {
 		std::fprintf(stderr, "Network backward called before forward\n");
 		return;
 	}
+
+	GpuTimer timer;
+	timer.start();
 
 	NetworkCache& cache = get_cache(last_batch_, hidden_features_, out_features_);
 
@@ -171,6 +180,8 @@ void Network::backward() {
 	batch_norm_.backward(hidden_grad_buf, bn_grad_buf);
 	FloatBuffer grad_in_buf(last_batch_ * static_cast<size_t>(in_features_));
 	layers_[0].backward(bn_grad_buf, grad_in_buf);
+	timer.stop();
+	timing_.compute_ms += static_cast<double>(timer.elapsed_ms());
 }
 
 void Network::sgd_step(float learning_rate, GradientSync* sync) {
@@ -194,12 +205,35 @@ void Network::sgd_step(float learning_rate, GradientSync* sync) {
 		bn_grads[1]->copy_to_host(host_dbeta.data(), host_dbeta.size());
 
 		// Synchronize all gradient buffers across ranks before applying SGD.
+		auto sync_start = std::chrono::high_resolution_clock::now();
 		sync->allreduce_mean(host_dweights.data(), static_cast<int>(host_dweights.size()));
+		auto sync_end = std::chrono::high_resolution_clock::now();
+		timing_.sync_ms += std::chrono::duration<double, std::milli>(sync_end - sync_start).count();
+
+		sync_start = std::chrono::high_resolution_clock::now();
 		sync->allreduce_mean(host_dbias.data(), static_cast<int>(host_dbias.size()));
+		sync_end = std::chrono::high_resolution_clock::now();
+		timing_.sync_ms += std::chrono::duration<double, std::milli>(sync_end - sync_start).count();
+
+		sync_start = std::chrono::high_resolution_clock::now();
 		sync->allreduce_mean(host_dout_weights.data(), static_cast<int>(host_dout_weights.size()));
+		sync_end = std::chrono::high_resolution_clock::now();
+		timing_.sync_ms += std::chrono::duration<double, std::milli>(sync_end - sync_start).count();
+
+		sync_start = std::chrono::high_resolution_clock::now();
 		sync->allreduce_mean(host_dout_bias.data(), static_cast<int>(host_dout_bias.size()));
+		sync_end = std::chrono::high_resolution_clock::now();
+		timing_.sync_ms += std::chrono::duration<double, std::milli>(sync_end - sync_start).count();
+
+		sync_start = std::chrono::high_resolution_clock::now();
 		sync->allreduce_mean(host_dgamma.data(), static_cast<int>(host_dgamma.size()));
+		sync_end = std::chrono::high_resolution_clock::now();
+		timing_.sync_ms += std::chrono::duration<double, std::milli>(sync_end - sync_start).count();
+
+		sync_start = std::chrono::high_resolution_clock::now();
 		sync->allreduce_mean(host_dbeta.data(), static_cast<int>(host_dbeta.size()));
+		sync_end = std::chrono::high_resolution_clock::now();
+		timing_.sync_ms += std::chrono::duration<double, std::milli>(sync_end - sync_start).count();
 
 		grads[0]->copy_from_host(host_dweights.data(), host_dweights.size());
 		grads[1]->copy_from_host(host_dbias.data(), host_dbias.size());
@@ -209,6 +243,8 @@ void Network::sgd_step(float learning_rate, GradientSync* sync) {
 		bn_grads[1]->copy_from_host(host_dbeta.data(), host_dbeta.size());
 	}
 
+	GpuTimer timer;
+	timer.start();
 	sgd_update_gpu(params[0]->data(), grads[0]->data(), learning_rate,
 					static_cast<int>(grads[0]->size()));
 	sgd_update_gpu(params[1]->data(), grads[1]->data(), learning_rate,
@@ -221,6 +257,17 @@ void Network::sgd_step(float learning_rate, GradientSync* sync) {
 					static_cast<int>(bn_grads[0]->size()));
 	sgd_update_gpu(bn_params[1]->data(), bn_grads[1]->data(), learning_rate,
 					static_cast<int>(bn_grads[1]->size()));
+	timer.stop();
+	timing_.compute_ms += static_cast<double>(timer.elapsed_ms());
+}
+
+void Network::reset_timers() {
+	timing_.compute_ms = 0.0;
+	timing_.sync_ms = 0.0;
+}
+
+Network::TimingStats Network::timing_ms() const {
+	return timing_;
 }
 
 float Network::get_accuracy(const FloatBuffer& input, const LabelBuffer& labels) {

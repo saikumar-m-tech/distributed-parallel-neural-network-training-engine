@@ -13,6 +13,11 @@ class GradientSync;
 
 class Network {
 public:
+	struct TimingStats {
+		double compute_ms = 0.0;
+		double sync_ms = 0.0;
+	};
+
 	explicit Network(std::vector<Dense> layers);
 
 	float forward(const FloatBuffer& input, const LabelBuffer& labels);
@@ -21,6 +26,8 @@ public:
 	float get_accuracy(const FloatBuffer& input, const LabelBuffer& labels);
 	void save_weights(const std::string& path) const;
 	void load_weights(const std::string& path);
+	void reset_timers();
+	TimingStats timing_ms() const;
 
 private:
 	std::vector<Dense> layers_;
@@ -35,6 +42,7 @@ private:
 	int in_features_;
 	int hidden_features_;
 	int out_features_;
+	TimingStats timing_;
 };
 
 #endif // NETWORK_HPP

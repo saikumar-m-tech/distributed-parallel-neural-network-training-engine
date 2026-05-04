@@ -73,13 +73,14 @@ def main() -> int:
 				os.makedirs(log_dir, exist_ok=True)
 			if not os.path.exists(args.log_csv) or os.path.getsize(args.log_csv) == 0:
 				with open(args.log_csv, "w", encoding="utf-8") as handle:
-					handle.write("epoch,loss,accuracy,time_per_epoch,throughput\n")
+					handle.write("epoch,loss,accuracy,time_per_epoch,throughput,compute_ms,sync_ms\n")
 
 	total_start = time.perf_counter()
 
 	for epoch in range(config.epochs):
 		current_lr = config.learning_rate * (0.5 ** (epoch // 20))
 		trainer.set_learning_rate(current_lr)
+		trainer.reset_timers()
 		epoch_start = time.perf_counter()
 		losses = []
 		samples = 0
@@ -98,15 +99,18 @@ def main() -> int:
 			acc = trainer.get_accuracy(X_test, y_test)
 			epoch_time = time.perf_counter() - epoch_start
 			throughput = samples / max(epoch_time, 1e-8)
+			compute_ms, sync_ms = trainer.get_timers_ms()
 			print(
 				f"Epoch {epoch}: loss={mean_loss:.4f} acc={acc:.2%} "
-				f"time={epoch_time:.2f}s samples/s={throughput:.1f}",
+				f"time={epoch_time:.2f}s samples/s={throughput:.1f} "
+				f"compute_ms={compute_ms:.1f} sync_ms={sync_ms:.1f}",
 				flush=True,
 			)
 			if args.log_csv:
 				with open(args.log_csv, "a", encoding="utf-8") as handle:
 					handle.write(
-						f"{epoch},{mean_loss:.6f},{acc:.6f},{epoch_time:.3f},{throughput:.1f}\n"
+						f"{epoch},{mean_loss:.6f},{acc:.6f},{epoch_time:.3f},{throughput:.1f},"
+						f"{compute_ms:.3f},{sync_ms:.3f}\n"
 					)
 
 	if rank == 0:
