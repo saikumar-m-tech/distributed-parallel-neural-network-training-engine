@@ -67,6 +67,10 @@ public:
 		net_.load_weights(path);
 	}
 
+	void set_learning_rate(float learning_rate) {
+		learning_rate_ = learning_rate;
+	}
+
 private:
 	static std::vector<Dense> build_layers(int input_dim, int hidden_dim, int output_dim) {
 		std::vector<Dense> layers;
@@ -88,5 +92,6 @@ PYBIND11_MODULE(parallelnet_cpp, m) {
 		.def("train_step", &Trainer::train_step)
 		.def("get_accuracy", &Trainer::get_accuracy)
 		.def("save_weights", &Trainer::save_weights)
-		.def("load_weights", &Trainer::load_weights);
+		.def("load_weights", &Trainer::load_weights)
+		.def("set_learning_rate", &Trainer::set_learning_rate);
 }

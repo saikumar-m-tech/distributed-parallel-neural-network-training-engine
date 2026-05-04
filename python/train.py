@@ -78,6 +78,8 @@ def main() -> int:
 	total_start = time.perf_counter()
 
 	for epoch in range(config.epochs):
+		current_lr = config.learning_rate * (0.5 ** (epoch // 20))
+		trainer.set_learning_rate(current_lr)
 		epoch_start = time.perf_counter()
 		losses = []
 		samples = 0
