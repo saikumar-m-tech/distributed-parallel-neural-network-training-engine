@@ -94,6 +94,28 @@ Or run the end-to-end demo (starts the server in the background and prints progr
 python python/demo.py
 ```
 
+Note: `demo.py` starts its own server. Do not run `start_server.py` at the same time.
+
+### Server performance knobs
+
+Enable micro-batching in the training worker to keep the GPU busier during bursty traffic:
+
+```
+MICRO_BATCH_SIZE=8 python python/start_server.py
+```
+
+PowerShell:
+
+```
+$env:MICRO_BATCH_SIZE=8; python python/start_server.py
+```
+
+### Index-based training payloads
+
+The server now preloads CIFAR-10 and `/train` accepts `indices` to avoid sending full tensors.
+This cuts JSON overhead and improves throughput. The scripts `demo.py` and `send_epochs.py`
+already use indices.
+
 Example output (numbers will vary):
 
 ```
@@ -142,6 +164,16 @@ To continue training while the server is running:
 python python/send_epochs.py --epochs 10 --batch-size 256
 ```
 
+### Concurrent load generator
+
+To keep the GPU busy with multiple clients and periodic prediction checks:
+
+```
+python python/start_server.py
+python python/multi_client_load.py --workers 6 --batch-size 256 --run-seconds 180 \
+	--accuracy-interval 15 --predict-batch 128
+```
+
 ## GPU utilization check
 
 Open a second terminal while demo.py is running:
@@ -158,6 +190,9 @@ nvidia-smi
 
 Look for GPU-Util above 50% and Memory-Used above ~500MB. If GPU-Util is near 0%,
 increase batch size to 256 or 512 in send_epochs.py.
+
+If the queue depth stays at 0, increase load with `multi_client_load.py` or raise
+`MICRO_BATCH_SIZE`.
 
 ## Workflow and project stage
 
