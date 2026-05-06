@@ -28,21 +28,16 @@ def _wait_for_queue(session: requests.Session, base_url: str) -> dict:
 def _send_batches(
     session: requests.Session,
     base_url: str,
-    X_train: np.ndarray,
-    y_train: np.ndarray,
+    num_samples: int,
     batch_size: int,
     seed: int,
 ) -> None:
     rng = np.random.default_rng(seed)
-    indices = rng.permutation(X_train.shape[0])
-    X_shuffled = X_train[indices]
-    y_shuffled = y_train[indices]
+    indices = rng.permutation(num_samples)
 
-    for start in range(0, X_shuffled.shape[0], batch_size):
+    for start in range(0, indices.shape[0], batch_size):
         end = start + batch_size
-        X_batch = X_shuffled[start:end]
-        y_batch = y_shuffled[start:end]
-        payload = {"X": X_batch.tolist(), "y": y_batch.tolist()}
+        payload = {"indices": indices[start:end].tolist()}
         response = session.post(f"{base_url}/train", json=payload, timeout=30)
         response.raise_for_status()
 
@@ -79,14 +74,14 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
     os.chdir(repo_root)
 
-    X_train, y_train, _, _ = data_loader.get_data("data")
+    X_train, _, _, _ = data_loader.get_data("data")
 
     history: list[dict] = []
 
     with requests.Session() as session:
         for epoch in range(1, epochs + 1):
             start_time = time.perf_counter()
-            _send_batches(session, base_url, X_train, y_train, batch_size, seed=123)
+            _send_batches(session, base_url, X_train.shape[0], batch_size, seed=123)
             status = _wait_for_queue(session, base_url)
             elapsed = time.perf_counter() - start_time
 

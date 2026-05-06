@@ -51,21 +51,21 @@ def _poll_health(base_url: str, timeout_s: float = 30.0) -> None:
     raise RuntimeError("Server did not become healthy within timeout")
 
 
-def _fetch_status(base_url: str) -> dict[str, Any]:
-    response = requests.get(f"{base_url}/status", timeout=10)
+def _fetch_status(session: requests.Session, base_url: str) -> dict[str, Any]:
+    response = session.get(f"{base_url}/status", timeout=10)
     response.raise_for_status()
     return response.json()
 
 
-def _send_train(base_url: str, X: np.ndarray, y: np.ndarray) -> None:
-    payload = {"X": X.tolist(), "y": y.tolist()}
-    response = requests.post(f"{base_url}/train", json=payload, timeout=30)
+def _send_train(session: requests.Session, base_url: str, indices: list[int]) -> None:
+    payload = {"indices": indices}
+    response = session.post(f"{base_url}/train", json=payload, timeout=30)
     response.raise_for_status()
 
 
-def _predict(base_url: str, X: np.ndarray) -> dict[str, Any]:
+def _predict(session: requests.Session, base_url: str, X: np.ndarray) -> dict[str, Any]:
     payload = {"X": X.tolist()}
-    response = requests.post(f"{base_url}/predict", json=payload, timeout=30)
+    response = session.post(f"{base_url}/predict", json=payload, timeout=30)
     response.raise_for_status()
     return response.json()
 
@@ -99,62 +99,65 @@ def main() -> int:
         if total_full_batches == 0:
             raise RuntimeError("No full batches available in CIFAR-10 training set")
 
-        for idx in range(50):
-            batch_idx = idx % total_full_batches
-            start = batch_idx * batch_size
-            end = start + batch_size
-            _send_train(base_url, X_train[start:end], y_train[start:end])
+        min_predict_step = 200
 
-            if (idx + 1) % 10 == 0:
-                status = _fetch_status(base_url)
-                _print_status_line(status)
+        with requests.Session() as session:
+            for idx in range(min_predict_step):
+                batch_idx = idx % total_full_batches
+                start = batch_idx * batch_size
+                end = start + batch_size
+                _send_train(session, base_url, list(range(start, end)))
 
-            time.sleep(0.05)
+                if (idx + 1) % 10 == 0:
+                    status = _fetch_status(session, base_url)
+                    _print_status_line(status)
+                    if int(status.get("queue_depth", 0)) >= 60:
+                        time.sleep(0.01)
 
-        while True:
-            status = _fetch_status(base_url)
-            if int(status.get("step", 0)) >= 50:
-                break
-            time.sleep(0.5)
+            while True:
+                status = _fetch_status(session, base_url)
+                if int(status.get("step", 0)) >= min_predict_step and status.get("is_ready"):
+                    break
+                time.sleep(0.2)
 
-        while True:
-            try:
-                prediction = _predict(base_url, X_test[:5])
-                break
-            except requests.HTTPError as exc:
-                if exc.response is not None and exc.response.status_code == 503:
-                    time.sleep(1.0)
-                    continue
-                raise
+            while True:
+                try:
+                    prediction = _predict(session, base_url, X_test[:5])
+                    break
+                except requests.HTTPError as exc:
+                    if exc.response is not None and exc.response.status_code == 503:
+                        time.sleep(0.5)
+                        continue
+                    raise
 
-        print("", flush=True)
-        print("Sample predictions (5 test images):", flush=True)
-        preds = prediction.get("predictions", [])
-        for idx, pred in enumerate(preds):
-            actual = CLASS_NAMES[int(y_test[idx])]
-            predicted = CLASS_NAMES[int(pred)] if int(pred) < len(CLASS_NAMES) else str(pred)
-            marker = "OK" if predicted == actual else "X"
-            print(
-                f"  Image {idx + 1}: actual={actual:<10} predicted={predicted:<11} {marker}",
-                flush=True,
-            )
+            print("", flush=True)
+            print("Sample predictions (5 test images):", flush=True)
+            preds = prediction.get("predictions", [])
+            for idx, pred in enumerate(preds):
+                actual = CLASS_NAMES[int(y_test[idx])]
+                predicted = CLASS_NAMES[int(pred)] if int(pred) < len(CLASS_NAMES) else str(pred)
+                marker = "OK" if predicted == actual else "X"
+                print(
+                    f"  Image {idx + 1}: actual={actual:<10} predicted={predicted:<11} {marker}",
+                    flush=True,
+                )
 
-        print("", flush=True)
-        print("Continuing training...", flush=True)
+            print("", flush=True)
+            print("Continuing training...", flush=True)
 
-        for idx in range(50, 400):
-            batch_idx = idx % total_full_batches
-            start = batch_idx * batch_size
-            end = start + batch_size
-            _send_train(base_url, X_train[start:end], y_train[start:end])
+            for idx in range(min_predict_step, 400):
+                batch_idx = idx % total_full_batches
+                start = batch_idx * batch_size
+                end = start + batch_size
+                _send_train(session, base_url, list(range(start, end)))
 
-            if (idx + 1) % 50 == 0:
-                status = _fetch_status(base_url)
-                _print_status_line(status)
+                if (idx + 1) % 50 == 0:
+                    status = _fetch_status(session, base_url)
+                    _print_status_line(status)
+                    if int(status.get("queue_depth", 0)) >= 60:
+                        time.sleep(0.01)
 
-            time.sleep(0.05)
-
-        final_status = _fetch_status(base_url)
+            final_status = _fetch_status(session, base_url)
         final_loss = float(final_status.get("loss", 0.0))
         final_acc = float(final_status.get("accuracy", 0.0)) * 100.0
         samples = 400 * batch_size

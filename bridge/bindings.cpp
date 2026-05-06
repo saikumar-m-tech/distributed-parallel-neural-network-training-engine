@@ -1,3 +1,4 @@
+#include <cstring>
 #include <string>
 
 #include <pybind11/numpy.h>
@@ -59,6 +60,36 @@ public:
 		return net_.get_accuracy(input_buf, label_buf);
 	}
 
+	py::tuple predict(py::array_t<float> X) {
+		auto x = X.request();
+		if (x.ndim != 2) {
+			throw std::runtime_error("X must be 2D");
+		}
+
+		FloatBuffer input_buf(static_cast<size_t>(x.size));
+		input_buf.copy_from_host(static_cast<float*>(x.ptr), static_cast<size_t>(x.size));
+
+		std::vector<int> predictions;
+		std::vector<float> probabilities;
+		net_.predict(input_buf, predictions, probabilities);
+
+		const size_t batch = static_cast<size_t>(x.shape[0]);
+		const size_t classes = batch == 0 ? 0 : probabilities.size() / batch;
+
+		py::array_t<int> pred_array({static_cast<py::ssize_t>(batch)});
+		if (!predictions.empty()) {
+			std::memcpy(pred_array.mutable_data(), predictions.data(),
+						predictions.size() * sizeof(int));
+		}
+		py::array_t<float> prob_array({static_cast<py::ssize_t>(batch),
+								 static_cast<py::ssize_t>(classes)});
+		if (!probabilities.empty()) {
+			std::memcpy(prob_array.mutable_data(), probabilities.data(),
+						probabilities.size() * sizeof(float));
+		}
+		return py::make_tuple(pred_array, prob_array);
+	}
+
 	void save_weights(const std::string& path) {
 		net_.save_weights(path);
 	}
@@ -100,6 +131,7 @@ PYBIND11_MODULE(parallelnet_cpp, m) {
 		.def(py::init<int, int, int, float, int, int>())
 		.def("train_step", &Trainer::train_step)
 		.def("get_accuracy", &Trainer::get_accuracy)
+		.def("predict", &Trainer::predict)
 		.def("save_weights", &Trainer::save_weights)
 		.def("load_weights", &Trainer::load_weights)
 		.def("set_learning_rate", &Trainer::set_learning_rate)

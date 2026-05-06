@@ -265,6 +265,51 @@ Network::TimingStats Network::timing_ms() const {
 	return timing_;
 }
 
+void Network::predict(const FloatBuffer& input, std::vector<int>& out_labels,
+					std::vector<float>& out_probs) {
+	if (input.size() % static_cast<size_t>(in_features_) != 0) {
+		std::fprintf(stderr, "Network predict input shape mismatch\n");
+		out_labels.clear();
+		out_probs.clear();
+		return;
+	}
+
+	const size_t batch = input.size() / static_cast<size_t>(in_features_);
+	out_labels.assign(batch, 0);
+	out_probs.assign(batch * static_cast<size_t>(out_features_), 0.0f);
+
+	FloatBuffer hidden_buf(batch * static_cast<size_t>(hidden_features_));
+	FloatBuffer norm_buf(hidden_buf.size());
+	layers_[0].forward(input, hidden_buf);
+	batch_norm_.forward(hidden_buf, norm_buf);
+
+	ensure_cache(batch);
+	CUDA_CHECK(cudaMemcpy(cache_.hidden.data(), norm_buf.data(),
+				sizeof(float) * cache_.hidden.size(), cudaMemcpyDeviceToDevice));
+	transpose_matrix_gpu(out_weights_.data(), cache_.out_weights_t.data(),
+					out_features_, hidden_features_);
+	tiled_matmul_gpu(cache_.hidden.data(), cache_.out_weights_t.data(), cache_.logits.data(),
+					static_cast<int>(batch), out_features_, hidden_features_);
+	bias_add_gpu(cache_.logits.data(), out_bias_.data(), static_cast<int>(batch), out_features_);
+	softmax_forward_gpu(cache_.logits.data(), cache_.probs.data(),
+					static_cast<int>(batch), out_features_);
+	cache_.probs.copy_to_host(out_probs.data(), out_probs.size());
+
+	for (size_t b = 0; b < batch; ++b) {
+		float max_val = -1.0e20f;
+		int max_idx = 0;
+		for (int o = 0; o < out_features_; ++o) {
+			float value = out_probs[b * static_cast<size_t>(out_features_) +
+				static_cast<size_t>(o)];
+			if (value > max_val) {
+				max_val = value;
+				max_idx = o;
+			}
+		}
+		out_labels[b] = max_idx;
+	}
+}
+
 float Network::get_accuracy(const FloatBuffer& input, const LabelBuffer& labels) {
 	if (input.size() % static_cast<size_t>(in_features_) != 0) {
 		std::fprintf(stderr, "Network accuracy input shape mismatch\n");

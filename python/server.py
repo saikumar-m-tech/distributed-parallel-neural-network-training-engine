@@ -27,18 +27,22 @@ if TYPE_CHECKING:
 
 
 GPU_NAME = "NVIDIA GeForce GTX 1650"
+MICRO_BATCH_SIZE = int(os.environ.get("MICRO_BATCH_SIZE", "8"))
 
 _queue: TrainingQueue | None = None
 _state: TrainingState | None = None
 _trainer: "Trainer" | None = None
+_x_train: np.ndarray | None = None
+_y_train: np.ndarray | None = None
 _x_test: np.ndarray | None = None
 _y_test: np.ndarray | None = None
 _worker_thread: threading.Thread | None = None
 
 
 class TrainRequest(BaseModel):
-    X: list[list[float]]
-    y: list[int]
+    X: list[list[float]] | None = None
+    y: list[int] | None = None
+    indices: list[int] | None = None
 
 
 class PredictRequest(BaseModel):
@@ -57,6 +61,21 @@ def _ensure_cuda_path() -> None:
 
 
 def _validate_train_payload(payload: TrainRequest) -> tuple[np.ndarray, np.ndarray]:
+    if payload.indices is not None:
+        if _x_train is None or _y_train is None:
+            raise HTTPException(status_code=503, detail="Training data not initialized")
+        indices = np.asarray(payload.indices, dtype=np.int64)
+        if indices.ndim != 1 or indices.size == 0:
+            raise HTTPException(status_code=400, detail="indices must be a non-empty list")
+        if indices.min() < 0 or indices.max() >= _x_train.shape[0]:
+            raise HTTPException(status_code=400, detail="indices out of range")
+        X = np.ascontiguousarray(_x_train[indices], dtype=np.float32)
+        y = np.ascontiguousarray(_y_train[indices], dtype=np.int32)
+        return X, y
+
+    if payload.X is None or payload.y is None:
+        raise HTTPException(status_code=400, detail="Provide X/y or indices")
+
     try:
         X = np.ascontiguousarray(payload.X, dtype=np.float32)
         y = np.ascontiguousarray(payload.y, dtype=np.int32)
@@ -85,23 +104,9 @@ def _validate_predict_payload(payload: PredictRequest) -> np.ndarray:
     return X
 
 
-def _predict_with_accuracy_probe(trainer: "Trainer", X: np.ndarray) -> tuple[list[int], list[list[float]]]:
-    predictions: list[int] = []
-    probabilities: list[list[float]] = []
-    for idx in range(X.shape[0]):
-        sample = X[idx: idx + 1]
-        predicted = 0
-        for label in range(10):
-            y_probe = np.asarray([label], dtype=np.int32)
-            acc = trainer.get_accuracy(sample, y_probe)
-            if acc >= 1.0 - 1e-6:
-                predicted = label
-                break
-        predictions.append(predicted)
-        probs = [0.0] * 10
-        probs[predicted] = 1.0
-        probabilities.append(probs)
-    return predictions, probabilities
+def _predict_with_logits(trainer: "Trainer", X: np.ndarray) -> tuple[list[int], list[list[float]]]:
+    preds, probs = trainer.predict(X)
+    return preds.tolist(), probs.tolist()
 
 
 def train_worker(
@@ -115,8 +120,9 @@ def train_worker(
     step = 0
     last_accuracy = 0.0
     accuracy_every = max(1, int(accuracy_every))
+    micro_batches = max(1, MICRO_BATCH_SIZE)
     while True:
-        batch = queue.get_batch()
+        batch = queue.drain_batch(max_batches=micro_batches)
         if batch is None:
             continue
         X, y = batch
@@ -133,13 +139,13 @@ def train_worker(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _queue, _state, _trainer, _x_test, _y_test, _worker_thread
+    global _queue, _state, _trainer, _x_train, _y_train, _x_test, _y_test, _worker_thread
 
     _ensure_cuda_path()
     from parallelnet_cpp import Trainer
 
     config = get_config()
-    _, _, X_test, y_test = data_loader.get_data(config.data_dir)
+    X_train, y_train, X_test, y_test = data_loader.get_data(config.data_dir)
     accuracy_samples = max(1, int(config.status_accuracy_samples))
     accuracy_samples = min(accuracy_samples, X_test.shape[0])
     X_eval = X_test[:accuracy_samples]
@@ -148,6 +154,8 @@ async def lifespan(app: FastAPI):
     _queue = TrainingQueue(max_batches=config.queue_max_batches)
     _state = TrainingState(ready_steps=config.ready_steps)
     _trainer = Trainer(3072, 512, 10, 0.01, 0, 1)
+    _x_train = X_train
+    _y_train = y_train
     _x_test = X_test
     _y_test = y_test
 
@@ -205,7 +213,7 @@ def predict(payload: PredictRequest) -> dict[str, Any]:
     if not snapshot["is_ready"]:
         raise HTTPException(status_code=503, detail="model not ready yet")
     X = _validate_predict_payload(payload)
-    predictions, probabilities = _predict_with_accuracy_probe(trainer, X)
+    predictions, probabilities = _predict_with_logits(trainer, X)
     return {"predictions": predictions, "probabilities": probabilities}
 
 

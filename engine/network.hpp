@@ -23,6 +23,8 @@ public:
 	float forward(const FloatBuffer& input, const LabelBuffer& labels);
 	void backward();
 	void sgd_step(float learning_rate, GradientSync* sync);
+	void predict(const FloatBuffer& input, std::vector<int>& out_labels,
+				std::vector<float>& out_probs);
 	float get_accuracy(const FloatBuffer& input, const LabelBuffer& labels);
 	void save_weights(const std::string& path) const;
 	void load_weights(const std::string& path);
