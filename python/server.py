@@ -108,11 +108,13 @@ def train_worker(
     queue: TrainingQueue,
     state: TrainingState,
     trainer: "Trainer",
-    X_test: np.ndarray,
-    y_test: np.ndarray,
+    X_eval: np.ndarray,
+    y_eval: np.ndarray,
+    accuracy_every: int,
 ) -> None:
     step = 0
     last_accuracy = 0.0
+    accuracy_every = max(1, int(accuracy_every))
     while True:
         batch = queue.get_batch()
         if batch is None:
@@ -120,11 +122,11 @@ def train_worker(
         X, y = batch
         try:
             loss = trainer.train_step(X, y)
-            if step % 20 == 0:
-                last_accuracy = trainer.get_accuracy(X_test, y_test)
+            step += 1
+            if step % accuracy_every == 0:
+                last_accuracy = trainer.get_accuracy(X_eval, y_eval)
             state.update(loss, last_accuracy, y.shape[0])
             state.add_history_point()
-            step += 1
         except Exception as exc:
             print(f"train_worker error: {exc}", flush=True)
 
@@ -138,16 +140,20 @@ async def lifespan(app: FastAPI):
 
     config = get_config()
     _, _, X_test, y_test = data_loader.get_data(config.data_dir)
+    accuracy_samples = max(1, int(config.status_accuracy_samples))
+    accuracy_samples = min(accuracy_samples, X_test.shape[0])
+    X_eval = X_test[:accuracy_samples]
+    y_eval = y_test[:accuracy_samples]
 
-    _queue = TrainingQueue()
-    _state = TrainingState()
+    _queue = TrainingQueue(max_batches=config.queue_max_batches)
+    _state = TrainingState(ready_steps=config.ready_steps)
     _trainer = Trainer(3072, 512, 10, 0.01, 0, 1)
     _x_test = X_test
     _y_test = y_test
 
     _worker_thread = threading.Thread(
         target=train_worker,
-        args=(_queue, _state, _trainer, _x_test, _y_test),
+        args=(_queue, _state, _trainer, X_eval, y_eval, config.status_accuracy_every),
         daemon=True,
     )
     _worker_thread.start()

@@ -80,6 +80,85 @@ Useful speed flags:
 mpirun -n 1 python python/train.py --batch-size 512 --limit-samples 20000 --epochs 5
 ```
 
+## Server demo (FastAPI)
+
+Start the training server directly:
+
+```
+python python/start_server.py
+```
+
+Or run the end-to-end demo (starts the server in the background and prints progress):
+
+```
+python python/demo.py
+```
+
+Example output (numbers will vary):
+
+```
+Starting ParallelNet training server in background...
+Server ready at http://localhost:8000
+
+Dataset: 50,000 training images, 10,000 test images
+Model: Dense(3072->512)->ReLU->Dense(512->10) -- 1,594,890 parameters
+GPU: NVIDIA GeForce GTX 1650 (4 GB VRAM)
+
+Sending training data...
+Step   10 | Loss: 2.287 | Acc:  9.8% | Queue: 3
+Step   20 | Loss: 2.156 | Acc: 13.2% | Queue: 2
+Step   30 | Loss: 1.982 | Acc: 18.7% | Queue: 4
+Step   40 | Loss: 1.847 | Acc: 22.1% | Queue: 3
+Step   50 | Loss: 1.734 | Acc: 26.4% | Queue: 2
+
+Sample predictions (5 test images):
+	Image 1: actual=cat       predicted=cat        OK
+	Image 2: actual=ship      predicted=automobile X
+	Image 3: actual=airplane  predicted=airplane   OK
+	Image 4: actual=frog      predicted=frog       OK
+	Image 5: actual=horse     predicted=deer       X
+
+Continuing training...
+Step  100 | Loss: 1.623 | Acc: 29.8% | Queue: 2
+Step  150 | Loss: 1.534 | Acc: 32.1% | Queue: 3
+Step  200 | Loss: 1.478 | Acc: 34.6% | Queue: 1
+Step  250 | Loss: 1.421 | Acc: 36.8% | Queue: 2
+Step  300 | Loss: 1.389 | Acc: 38.2% | Queue: 3
+Step  350 | Loss: 1.352 | Acc: 39.7% | Queue: 2
+Step  400 | Loss: 1.318 | Acc: 41.3% | Queue: 0
+
+After 1 epoch (51,200 samples):
+	Loss:     1.318
+	Accuracy: 41.3%
+	Expected: ~35-45% (MLP on CIFAR-10, 1 epoch) OK
+
+Server still running at http://localhost:8000/docs
+Press Ctrl+C to stop. Run send_epochs.py --epochs 10 for full training.
+```
+
+To continue training while the server is running:
+
+```
+python python/send_epochs.py --epochs 10 --batch-size 256
+```
+
+## GPU utilization check
+
+Open a second terminal while demo.py is running:
+
+```
+nvidia-smi dmon -s u -d 1
+```
+
+Or a single snapshot:
+
+```
+nvidia-smi
+```
+
+Look for GPU-Util above 50% and Memory-Used above ~500MB. If GPU-Util is near 0%,
+increase batch size to 256 or 512 in send_epochs.py.
+
 ## Workflow and project stage
 
 Current workflow:

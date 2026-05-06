@@ -11,6 +11,10 @@ class FedSimConfig:
 	epochs: int = 10
 	learning_rate: float = 0.01
 	limit_samples: int | None = None
+	status_accuracy_samples: int = 2000
+	status_accuracy_every: int = 10
+	ready_steps: int = 50
+	queue_max_batches: int = 64
 
 
 def get_config() -> FedSimConfig:

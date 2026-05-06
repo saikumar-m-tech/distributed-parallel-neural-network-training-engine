@@ -5,8 +5,9 @@ from typing import Any
 
 
 class TrainingState:
-    def __init__(self) -> None:
+    def __init__(self, ready_steps: int = 50) -> None:
         self._lock = threading.Lock()
+        self._ready_steps = max(1, int(ready_steps))
         self.step: int = 0
         self.epoch: int = 0
         self.loss: float = float("inf")
@@ -21,7 +22,7 @@ class TrainingState:
             self.loss = float(loss)
             self.accuracy = float(accuracy)
             self.samples_seen += int(batch_size)
-            if self.step >= 100:
+            if self.step >= self._ready_steps:
                 self.is_ready = True
 
     def snapshot(self) -> dict[str, Any]:
